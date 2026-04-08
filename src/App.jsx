@@ -211,17 +211,23 @@ export default function App() {
 
       useProxyStore.setState((state) => ({
         requests: [
-          ...state.requests,
+          ...state.requests.filter((item) => Number(item.id) !== id),
           {
             id,
             method,
             host,
             path,
             status: statusCode,
-            timeMs: req.durationMs || 0,
+            timeMs: Number(req.durationMs || req.timeMs || 0),
+            direction: String(req.direction || "in-out"),
+            requestFormat: String(req.requestFormat || "unknown"),
+            responseFormat: String(req.responseFormat || "unknown"),
+            requestBytes: Number(req.requestBytes || 0),
+            responseBytes: Number(req.responseBytes || 0),
+            timestamp: String(req.timestamp || ""),
             flag: req.flag || "--",
-            requestRaw: req.requestBody || `${method} ${path} HTTP/1.1`,
-            responseRaw: req.responseBody || "",
+            requestRaw: req.requestRaw || req.requestBody || `${method} ${path} HTTP/1.1`,
+            responseRaw: req.responseRaw || req.responseBody || "",
           },
         ].slice(-10000),
       }));

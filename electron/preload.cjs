@@ -167,6 +167,7 @@ const api = {
     stop: () => invoke("scan:stop"),
     getFindings: () => invoke("scan:getFindings"),
     getStatus: () => invoke("scan:getStatus"),
+    testAiConnection: () => invoke("scan:testAiConnection"),
   },
 
   nuclei: {
@@ -192,6 +193,8 @@ const api = {
     replay: (payload) => invoke("proxy:replay", payload),
     clearRequests: () => invoke("proxy:clearRequests"),
     getStatus: () => invoke("proxy:getStatus"),
+    setIntercept: (payload) => invoke("proxy:setIntercept", payload),
+    exportSnapshot: () => invoke("proxy:exportSnapshot"),
   },
 
   fleet: {
@@ -204,6 +207,7 @@ const api = {
     open: (payload) => invoke("project:open", payload),
     openImportedImage: (payload) => invoke("project:openImportedImage", payload),
     getInfo: () => invoke("project:getInfo"),
+    getConfig: () => invoke("project:getConfig"),
     getAppMap: () => invoke("project:getAppMap"),
     startAppMapScan: (payload) => invoke("project:startAppMapScan", payload),
     getAppMapScanStatus: () => invoke("project:getAppMapScanStatus"),

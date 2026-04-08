@@ -5,7 +5,7 @@ import SecretsScanner from './modules/SecretsScanner.js'
 import CveScanner from './modules/CveScanner.js'
 import InfraScanner from './modules/InfraScanner.js'
 import DbScanner from './modules/DbScanner.js'
-import NucleiScanner from './modules/NucleiScanner.js'
+import ArtemisScanner from './modules/ArtemisScanner.js'
 import DiscoveryEngine from './DiscoveryEngine.js'
 import BrowserUseOrchestrator from '../browser/BrowserUseOrchestrator.js'
 
@@ -19,43 +19,104 @@ class ScanOrchestrator {
 
   async run(scanMode = 'full', modules = null) {
     console.log(`[ScanOrchestrator] Starting ${scanMode} scan`)
+    const progress = this.config?.wss
 
     const results = {
       critical: 0,
       high: 0,
       medium: 0,
       low: 0,
-      findings: []
+      findings: [],
+      operations: {}
     }
 
-    const enabledModules = this.normalizeModules(modules || [
+    let enabledModules = this.normalizeModules(modules || [
       'api',
       'auth',
       'input',
       'secrets',
       'cve',
       'infra',
-      'nuclei'
+      'artemis'
     ])
+
+    if (scanMode === 'full' && enabledModules.includes('browserUse')) {
+      enabledModules = [
+        'browserUse',
+        ...enabledModules.filter((module) => module !== 'browserUse')
+      ]
+    }
+
+    const runBrowserUse = Boolean(
+      scanMode === 'full'
+      && this.config?.modules?.browserUse
+      && !enabledModules.includes('browserUse')
+    )
+    const totalStages = enabledModules.length + (runBrowserUse ? 1 : 0)
+    let completedStages = 0
+
+    const emitProgress = (phaseName) => {
+      if (!progress) {
+        return
+      }
+      const base = 10
+      const weighted = totalStages > 0 ? Math.round((completedStages / totalStages) * 80) : 0
+      progress.emit('scan_progress', {
+        phase: scanMode,
+        phaseName,
+        percent: Math.min(92, base + weighted),
+      })
+    }
 
     // Run each module sequentially
     for (const module of enabledModules) {
       console.log(`[ScanOrchestrator] Running ${module} scanner...`)
+      emitProgress(`running-${module}`)
       try {
-        const findings = await this.runModule(module, scanMode)
+        const moduleResult = await this.runModule(module, scanMode)
+        const findings = Array.isArray(moduleResult)
+          ? moduleResult
+          : Array.isArray(moduleResult?.findings)
+            ? moduleResult.findings
+            : []
+
         results.findings.push(...findings)
+
+        if (moduleResult && !Array.isArray(moduleResult)) {
+          results.operations[module] = {
+            ...(moduleResult?.diagnostics || {}),
+            findingCount: findings.length
+          }
+        }
       } catch (e) {
         console.error(`[ScanOrchestrator] Error running ${module}:`, e.message)
       }
+      completedStages += 1
+      emitProgress(`completed-${module}`)
     }
 
-    if (scanMode === 'full' && this.config?.modules?.browserUse) {
+    if (runBrowserUse) {
       try {
-        const browserFindings = await this.runModule('browserUse', scanMode)
+        emitProgress('running-browserUse')
+        const browserResult = await this.runModule('browserUse', scanMode)
+        const browserFindings = Array.isArray(browserResult)
+          ? browserResult
+          : Array.isArray(browserResult?.findings)
+            ? browserResult.findings
+            : []
         results.findings.push(...browserFindings)
+
+        if (browserResult && !Array.isArray(browserResult)) {
+          results.operations.browserUse = {
+            ...(browserResult?.diagnostics || {}),
+            findingCount: browserFindings.length
+          }
+        }
       } catch (e) {
         console.error('[ScanOrchestrator] Error running browserUse:', e.message)
       }
+      completedStages += 1
+      emitProgress('completed-browserUse')
     }
 
     for (const finding of results.findings) {
@@ -73,7 +134,8 @@ class ScanOrchestrator {
   normalizeModules(modules) {
     const map = {
       fuzzer: 'input',
-      dependency: 'cve'
+      dependency: 'cve',
+      nuclei: 'artemis'
     }
 
     return [...new Set(modules.map((m) => map[m] || m))]
@@ -143,11 +205,16 @@ class ScanOrchestrator {
       return await new InfraScanner(this.config).scan()
     }
 
-    if (moduleName === 'nuclei') {
-      const scanner = new NucleiScanner(this.config)
-      return await scanner.scan(this.config?.project?.targetUrl || '', {
+    if (moduleName === 'artemis') {
+      const scanner = new ArtemisScanner(this.config)
+      const result = await scanner.scan(this.config?.project?.targetUrl || '', {
         severity: 'critical,high'
-      }).then((result) => result.findings || [])
+      })
+
+      return {
+        findings: result?.findings || [],
+        diagnostics: result?.diagnostics || { engine: 'artemis' }
+      }
     }
 
     if (moduleName === 'db') {
@@ -155,7 +222,11 @@ class ScanOrchestrator {
     }
 
     if (moduleName === 'browserUse') {
-      return await new BrowserUseOrchestrator(this.config, null).runAll()
+      if (scanMode === 'quick') {
+        return []
+      }
+      const orchestrator = new BrowserUseOrchestrator(this.config, null)
+      return await orchestrator.runAll(scannerRoutes)
     }
 
     if (scanMode === 'quick') {

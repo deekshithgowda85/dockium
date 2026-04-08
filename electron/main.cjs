@@ -25,7 +25,7 @@ const runtime = {
   generateDockerfile: null,
   ContainerManager: null,
   ScanOrchestrator: null,
-  NucleiScanner: null,
+  ArtemisScanner: null,
   DiscoveryEngine: null,
   FolderTreeBuilder: null,
   GitHookInstaller: null,
@@ -77,8 +77,8 @@ const defaultSettings = {
   reportIncludeEvidence: true,
   reportDefaultFormat: "PDF",
   reportLlmEnabled: false,
-  reportLlmEndpoint: "",
-  reportLlmModel: "qwen2.5:3b",
+  reportLlmEndpoint: "https://api.groq.com/openai/v1/chat/completions",
+  reportLlmModel: "llama-3.1-8b-instant",
   reportLlmApiKey: "",
   advancedTelemetry: false,
   advancedVerboseIpc: false,
@@ -219,7 +219,7 @@ async function bootstrapCoreRuntime() {
     dockerGenMod,
     containerManagerMod,
     scanMod,
-    nucleiScannerMod,
+    artemisScannerMod,
     discoveryMod,
     folderTreeBuilderMod,
     gitHookMod,
@@ -238,7 +238,7 @@ async function bootstrapCoreRuntime() {
     import(coreModulePath("docker/generator.js")),
     import(coreModulePath("orchestrator/ContainerManager.js")),
     import(coreModulePath("scanner/ScanOrchestrator.js")),
-    import(coreModulePath("scanner/modules/NucleiScanner.js")),
+    import(coreModulePath("scanner/modules/ArtemisScanner.js")),
     import(coreModulePath("scanner/DiscoveryEngine.js")),
     import(coreModulePath("mapper/FolderTreeBuilder.js")),
     import(coreModulePath("git/GitHookInstaller.js")),
@@ -258,7 +258,7 @@ async function bootstrapCoreRuntime() {
   runtime.generateDockerfile = dockerGenMod.generateDockerfile;
   runtime.ContainerManager = containerManagerMod.default;
   runtime.ScanOrchestrator = scanMod.default;
-  runtime.NucleiScanner = nucleiScannerMod.default;
+  runtime.ArtemisScanner = artemisScannerMod.default;
   runtime.DiscoveryEngine = discoveryMod.default;
   runtime.FolderTreeBuilder = folderTreeBuilderMod.default;
   runtime.GitHookInstaller = gitHookMod.default;
@@ -982,8 +982,28 @@ async function testImportedRoute(route, options = {}) {
   }
 
   const method = String(options?.method || route?.method || "GET").toUpperCase();
-  const rawPath = String(route?.path || "/").replace(/:([A-Za-z0-9_]+)/g, "1");
-  const url = `${targetUrl}${rawPath.startsWith("/") ? rawPath : `/${rawPath}`}`;
+  const rawPath = String(route?.path || "/");
+  const pathParams = Array.isArray(options?.pathParams)
+    ? options.pathParams
+    : (Array.isArray(options?.params) ? options.params : []);
+  const queryParams = Array.isArray(options?.queryParams) ? options.queryParams : [];
+  let materializedPath = rawPath.replace(/:([A-Za-z0-9_]+)/g, (_all, key) => {
+    const matched = pathParams.find((entry) => String(entry?.name || "") === String(key));
+    return encodeURIComponent(String(matched?.value || matched?.sample || 1));
+  });
+  if (!materializedPath.startsWith("/")) {
+    materializedPath = `/${materializedPath}`;
+  }
+  const query = new URLSearchParams();
+  queryParams.forEach((entry, index) => {
+    const name = String(entry?.name || `q${index + 1}`).trim();
+    if (!name) {
+      return;
+    }
+    query.append(name, String(entry?.value || entry?.sample || "sample"));
+  });
+  const querySuffix = query.toString() ? `?${query.toString()}` : "";
+  const url = `${targetUrl}${materializedPath}${querySuffix}`;
   const body = options?.body;
   const authHeaders = options?.authHeaders && typeof options.authHeaders === "object"
     ? options.authHeaders
@@ -1011,12 +1031,15 @@ async function testImportedRoute(route, options = {}) {
         liveRequest: {
           url,
           method,
+          pathParams,
+          queryParams,
           headers,
           body: body || null,
         },
         liveResponse: {
           statusCode: response.status,
           contentType: response.headers.get("content-type") || "unknown",
+          headers: Object.fromEntries(response.headers.entries()),
           bodyPreview: String(text || "").slice(0, 3000),
         },
       },
@@ -1408,6 +1431,68 @@ function clipText(value, maxLength = 220) {
   return `${normalized.slice(0, Math.max(1, maxLength - 3))}...`;
 }
 
+function normalizeProxyRequestForContext(request, index) {
+  const requestRaw = String(request?.requestRaw || "").trim();
+  const responseRaw = String(request?.responseRaw || "").trim();
+  const requestBody = String(request?.requestBody || "").trim();
+  const responseBody = String(request?.responseBody || "").trim();
+
+  return {
+    id: Number(request?.id || index + 1),
+    timestamp: String(request?.timestamp || ""),
+    method: String(request?.method || "GET").toUpperCase(),
+    host: String(request?.host || ""),
+    path: String(request?.path || "/"),
+    status: Number(request?.responseStatus || request?.status || 0),
+    durationMs: Number(request?.durationMs || request?.timeMs || 0),
+    flag: String(request?.flag || "normal"),
+    requestFormat: String(request?.requestFormat || "unknown"),
+    responseFormat: String(request?.responseFormat || "unknown"),
+    requestBytes: Number(request?.requestBytes || 0),
+    responseBytes: Number(request?.responseBytes || 0),
+    requestRaw: clipText(requestRaw || requestBody, 1800),
+    responseRaw: clipText(responseRaw || responseBody, 1800),
+  };
+}
+
+function summarizeProxyTraffic(requests = []) {
+  const summary = {
+    total: 0,
+    suspicious: 0,
+    finding: 0,
+    flagged: 0,
+    methods: {},
+    statuses: {
+      s2xx: 0,
+      s3xx: 0,
+      s4xx: 0,
+      s5xx: 0,
+      other: 0,
+    },
+  };
+
+  for (const entry of requests) {
+    summary.total += 1;
+
+    const method = String(entry?.method || "GET").toUpperCase();
+    summary.methods[method] = Number(summary.methods[method] || 0) + 1;
+
+    const status = Number(entry?.responseStatus || entry?.status || 0);
+    if (status >= 200 && status < 300) summary.statuses.s2xx += 1;
+    else if (status >= 300 && status < 400) summary.statuses.s3xx += 1;
+    else if (status >= 400 && status < 500) summary.statuses.s4xx += 1;
+    else if (status >= 500) summary.statuses.s5xx += 1;
+    else summary.statuses.other += 1;
+
+    const flag = String(entry?.flag || "").toLowerCase();
+    if (flag === "suspicious") summary.suspicious += 1;
+    if (flag === "finding") summary.finding += 1;
+    if (flag === "suspicious" || flag === "finding") summary.flagged += 1;
+  }
+
+  return summary;
+}
+
 function buildSummaryPrompt(context, extraPrompt = "") {
   const topFindings = (context?.findings || []).slice(0, 12).map((finding) => ({
     severity: finding.severity,
@@ -1430,10 +1515,18 @@ function buildSummaryPrompt(context, extraPrompt = "") {
         routeCount: context?.appMap?.routeCount || 0,
         warningCount: Array.isArray(context?.appMap?.warnings) ? context.appMap.warnings.length : 0,
       },
-      nuclei: {
-        findings: context?.nuclei?.findingsCount || 0,
-        status: context?.nuclei?.status?.phaseName || "idle",
-        lastError: context?.nuclei?.status?.lastError || "",
+      artemis: {
+        findings: context?.artemis?.findingsCount || context?.nuclei?.findingsCount || 0,
+        status: context?.artemis?.status?.phaseName || context?.nuclei?.status?.phaseName || "idle",
+        lastError: context?.artemis?.status?.lastError || context?.nuclei?.status?.lastError || "",
+        checksRun: Number(context?.artemis?.checksRun || 0),
+      },
+      browserUse: {
+        testedRoutes: Number(context?.browserUse?.coverage?.uniqueRoutes || 0),
+        uiPagesTested: Number(context?.browserUse?.coverage?.uiPagesTested || 0),
+        apiRoutesTested: Number(context?.browserUse?.coverage?.apiRoutesTested || 0),
+        authRoutesTested: Number(context?.browserUse?.coverage?.authRoutesTested || 0),
+        llmHelpProbe: context?.browserUse?.llmHelpProbe || null,
       },
       proxy: {
         requestCount: context?.proxy?.requestCount || 0,
@@ -1468,17 +1561,22 @@ async function buildReportContext() {
   const project = runtime.projectInfo || {};
   const appMap = runtime.appMap || {};
   const scan = runtime.lastScan || {};
-  const nuclei = runtime.nucleiState || { status: null, findings: [] };
+  const artemis = runtime.nucleiState || { status: null, findings: [] };
 
   const latestReportFindings = Array.isArray(runtime.latestReport?.findings)
     ? runtime.latestReport.findings
     : [];
   const scanFindings = Array.isArray(scan?.findings) ? scan.findings : [];
-  const nucleiFindings = Array.isArray(nuclei?.findings) ? nuclei.findings : [];
+  const artemisFindings = Array.isArray(artemis?.findings) ? artemis.findings : [];
+  const browserUseDocumentation = scan?.operations?.browserUse?.documentation
+    || runtime.latestReport?.operations?.browserUse?.documentation
+    || null;
+  const browserUseCoverage = browserUseDocumentation?.coverage || {};
+  const browserUseLlmProbe = browserUseDocumentation?.llmHelpProbe || null;
 
   const findings = [
     ...scanFindings.map((item, index) => normalizeFindingRecord(item, "scan", index)),
-    ...nucleiFindings.map((item, index) => normalizeFindingRecord(item, "nuclei", index)),
+    ...artemisFindings.map((item, index) => normalizeFindingRecord(item, "artemis", index)),
     ...latestReportFindings.map((item, index) => normalizeFindingRecord(item, "report", index)),
   ];
 
@@ -1489,9 +1587,12 @@ async function buildReportContext() {
   if (runtime.proxyEngine) {
     try {
       proxyStatus = runtime.proxyEngine.getStatus();
-      proxyRequests = runtime.proxyEngine.getRequests().slice(-25);
+      proxyRequests = runtime.proxyEngine.getRequests();
     } catch {}
   }
+  const totalProxyCount = Number(proxyStatus?.requestCount || proxyRequests.length || 0);
+  const proxySummary = summarizeProxyTraffic(proxyRequests);
+  const proxyRecentRequests = proxyRequests.slice(-80).map(normalizeProxyRequestForContext);
 
   let containers = [];
   if (runtime.ContainerManager?.getStatus) {
@@ -1523,16 +1624,40 @@ async function buildReportContext() {
       completedAt: String(scan?.completedAt || ""),
       findingsCount: scanFindings.length,
       summary: scan?.summary || summarizeBySeverity(scanFindings),
+      operations: scan?.operations || {},
+    },
+    artemis: {
+      status: artemis?.status || null,
+      findingsCount: artemisFindings.length,
+      findings: artemisFindings,
+      checksRun: Array.isArray(scan?.operations?.artemis?.testsRun)
+        ? scan.operations.artemis.testsRun.length
+        : 0,
+      endpointCount: Number(scan?.operations?.artemis?.endpointCount || 0),
+    },
+    browserUse: {
+      documentation: browserUseDocumentation,
+      coverage: {
+        inputRoutes: Number(browserUseCoverage?.inputRoutes || 0),
+        uniqueRoutes: Number(browserUseCoverage?.uniqueRoutes || 0),
+        duplicatesSkipped: Number(browserUseCoverage?.duplicatesSkipped || 0),
+        uiPagesTested: Number(browserUseCoverage?.uiPagesTested || 0),
+        apiRoutesTested: Number(browserUseCoverage?.apiRoutesTested || 0),
+        authRoutesTested: Number(browserUseCoverage?.authRoutesTested || 0),
+      },
+      llmHelpProbe: browserUseLlmProbe,
+      instances: Array.isArray(browserUseDocumentation?.instances) ? browserUseDocumentation.instances : [],
     },
     nuclei: {
-      status: nuclei?.status || null,
-      findingsCount: nucleiFindings.length,
-      findings: nucleiFindings,
+      status: artemis?.status || null,
+      findingsCount: artemisFindings.length,
+      findings: artemisFindings,
     },
     proxy: {
       status: proxyStatus,
-      requestCount: proxyRequests.length,
-      recentRequests: proxyRequests,
+      requestCount: totalProxyCount,
+      recentRequests: proxyRecentRequests,
+      summary: proxySummary,
     },
     git: {
       gateRules: runtime.gateRules || {},
@@ -1558,18 +1683,28 @@ async function generateLlmSummary(payload = {}) {
       ok: false,
       error: "AI summary is disabled in Settings > Report",
       code: 400,
-      detail: "Enable reportLlmEnabled before generating summary",
+      detail: "Enable reportLlmEnabled in Settings > Scanner (or Report) before generating summary",
     };
   }
 
-  const endpoint = String(settings.reportLlmEndpoint || "").trim();
-  const model = String(settings.reportLlmModel || "").trim();
+  const endpoint = String(settings.reportLlmEndpoint || "https://api.groq.com/openai/v1/chat/completions").trim();
+  const model = String(settings.reportLlmModel || "llama-3.1-8b-instant").trim();
   if (!endpoint || !model) {
     return {
       ok: false,
       error: "Missing LLM endpoint or model",
       code: 400,
-      detail: "Configure reportLlmEndpoint and reportLlmModel in Settings > Report",
+      detail: "Configure reportLlmEndpoint and reportLlmModel in Settings > Scanner (or Report)",
+    };
+  }
+
+  const apiKey = String(settings.reportLlmApiKey || "").trim();
+  if (!apiKey) {
+    return {
+      ok: false,
+      error: "Missing Groq API key",
+      code: 400,
+      detail: "Configure reportLlmApiKey in Settings > Scanner (or Report)",
     };
   }
 
@@ -1585,36 +1720,51 @@ async function generateLlmSummary(payload = {}) {
     };
   }
 
-  const prompt = buildSummaryPrompt(context, String(payload?.extraPrompt || "").trim());
+  const prompt = clipText(buildSummaryPrompt(context, String(payload?.extraPrompt || "").trim()), 12000);
   const headers = {
     "Content-Type": "application/json",
     Accept: "application/json",
-    "ngrok-skip-browser-warning": "true",
     "User-Agent": "Dockium-Desktop/1.0",
+    Authorization: /^bearer\s+/i.test(apiKey) ? apiKey : `Bearer ${apiKey}`,
   };
-
-  const apiKey = String(settings.reportLlmApiKey || "").trim();
-  if (apiKey) {
-    headers.Authorization = /^bearer\s+/i.test(apiKey) ? apiKey : `Bearer ${apiKey}`;
-  }
 
   try {
     const fetchImpl = await resolveFetch();
-    const response = await fetchImpl(endpoint, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        model,
-        prompt,
-        stream: false,
-      }),
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    let response;
+    try {
+      response = await fetchImpl(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: "system",
+              content: "You are Dockium report assistant. Return concise security summary text.",
+            },
+            {
+              role: "user",
+              content: prompt,
+            },
+          ],
+          temperature: 0.2,
+          max_tokens: 600,
+        }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
 
     const raw = await response.text();
     const parsed = safeJsonParse(raw);
     const summary = parsed.ok
       ? String(
-        parsed.value?.response
+        parsed.value?.choices?.[0]?.message?.content
+        || parsed.value?.choices?.[0]?.text
+        || parsed.value?.response
         || parsed.value?.message?.content
         || parsed.value?.output
         || ""
@@ -1670,16 +1820,15 @@ function registerCoreIpcHandlers() {
 
   registerScanIpc(ipcMain, {
     getProjectConfig: () => runtime.projectConfig,
+    getSettings: () => ({
+      ...defaultSettings,
+      ...(getStore().get("settings") || {}),
+    }),
     createScanOrchestrator: (config) => new runtime.ScanOrchestrator(config),
     ensureScanRuntime: async (config) => {
       if (runtime.ContainerManager?.ensureAppRunning) {
         await runtime.ContainerManager.ensureAppRunning({ ...config, wss: runtime.wss });
       }
-
-      if (!runtime.ContainerManager?.ensureScannerRunning) {
-        return;
-      }
-      await runtime.ContainerManager.ensureScannerRunning({ ...config, wss: runtime.wss });
     },
     buildReport: async (scanResult) => {
       const builder = new runtime.ReportBuilder();
@@ -1697,7 +1846,7 @@ function registerCoreIpcHandlers() {
 
   registerNucleiIpc(ipcMain, {
     getProjectConfig: () => runtime.projectConfig,
-    createNucleiScanner: (config) => new runtime.NucleiScanner(config),
+    createNucleiScanner: (config) => new runtime.ArtemisScanner(config),
     ensureNucleiRuntime: async (config, options = {}) => {
       const preflight = {
         app: {
@@ -1705,11 +1854,11 @@ function registerCoreIpcHandlers() {
           message: "",
         },
         scanner: {
-          created: false,
-          recreated: false,
-          healthy: false,
-          reason: "",
-          status: "unknown",
+          created: true,
+          recreated: Boolean(options?.forceScannerRecreate),
+          healthy: true,
+          reason: "Artemis scanner runs locally without scanner container",
+          status: "engine-local",
         },
       };
 
@@ -1719,46 +1868,7 @@ function registerCoreIpcHandlers() {
         preflight.app.message = "App runtime is available";
       }
 
-      if (runtime.ContainerManager?.ensureScannerRunning) {
-        const scannerOutcome = await runtime.ContainerManager.ensureScannerRunning(
-          { ...config, wss: runtime.wss },
-          { forceRecreate: Boolean(options?.forceScannerRecreate) }
-        );
-
-        preflight.scanner = {
-          created: Boolean(scannerOutcome?.created),
-          recreated: Boolean(scannerOutcome?.recreated),
-          healthy: Boolean(scannerOutcome?.healthy),
-          reason: String(scannerOutcome?.reason || ""),
-          status: String(scannerOutcome?.status || "unknown"),
-        };
-
-        if (!preflight.scanner.healthy) {
-          runtime.wss?.emitLog(
-            `Scanner preflight unhealthy (${preflight.scanner.reason || "unknown"}); recreating scanner container...`,
-            "warn"
-          );
-
-          const recovered = await runtime.ContainerManager.ensureScannerRunning(
-            { ...config, wss: runtime.wss },
-            { forceRecreate: true }
-          );
-
-          preflight.scanner = {
-            created: Boolean(recovered?.created),
-            recreated: true,
-            healthy: Boolean(recovered?.healthy),
-            reason: String(recovered?.reason || preflight.scanner.reason || ""),
-            status: String(recovered?.status || "unknown"),
-          };
-        }
-
-        if (!preflight.scanner.healthy) {
-          throw new Error(
-            `Scanner container is not healthy after auto-recovery: ${preflight.scanner.reason || "unknown reason"}`
-          );
-        }
-      }
+      runtime.wss?.emitLog("Artemis scanner preflight complete (containerless engine mode)");
 
       return preflight;
     },
@@ -1801,6 +1911,7 @@ function registerCoreIpcHandlers() {
     },
     getProxyEngine: () => runtime.proxyEngine,
     getWss: () => runtime.wss,
+    getProjectInfo: () => runtime.projectInfo,
   });
 
   registerProjectIpc(ipcMain, {
@@ -1875,6 +1986,8 @@ function registerCoreIpcHandlers() {
           authHeaders: options?.authHeaders || {},
           headers: options?.headers || {},
           body: options?.body,
+          pathParams: options?.pathParams || options?.params || [],
+          queryParams: options?.queryParams || [],
           method: options?.method || route?.method,
         });
       }
@@ -1885,7 +1998,8 @@ function registerCoreIpcHandlers() {
         authHeaders: options?.authHeaders || {},
         headers: options?.headers || {},
         body: options?.body,
-        params: options?.params || [],
+        pathParams: options?.pathParams || options?.params || [],
+        queryParams: options?.queryParams || [],
         method: options?.method || route?.method,
       });
     },
@@ -1894,6 +2008,17 @@ function registerCoreIpcHandlers() {
   registerFleetIpc(ipcMain, {
     runtime,
     getWss: () => runtime.wss,
+    ensureProxyEngine: (config = {}) => {
+      if (!runtime.proxyEngine) {
+        runtime.proxyEngine = new runtime.ProxyEngine({
+          ...config,
+          project: runtime.projectConfig?.project,
+          wss: runtime.wss,
+        });
+      }
+      return runtime.proxyEngine;
+    },
+    getProxyEngine: () => runtime.proxyEngine,
   });
 
   registerReportIpc(ipcMain, BrowserWindow, dialog, {
@@ -2111,7 +2236,7 @@ function createSplashWindow() {
     movable: false,
     alwaysOnTop: true,
     show: false,
-    backgroundColor: "#0b0f14",
+    backgroundColor: "#ffffff",
     autoHideMenuBar: true,
   });
 
@@ -2141,7 +2266,7 @@ function createWindow() {
     maximizable: true,
     closable: true,
     show: false,
-    backgroundColor: "#0b0f14",
+    backgroundColor: "#ffffff",
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),

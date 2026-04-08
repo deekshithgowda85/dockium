@@ -127,6 +127,10 @@ export default function Settings() {
 
             {activeCategory === "Scanner" ? (
               <>
+                <p className="settings-v2-note">
+                  Scanner auth assistance and AI connectivity checks use Groq settings below.
+                  Report summary and browser login/register assistance use the same values.
+                </p>
                 <Row label="Default scan mode:">
                   <select
                     value={settings.defaultScanMode}
@@ -151,6 +155,34 @@ export default function Settings() {
                     type="number"
                     value={settings.timeoutPerRequest}
                     onChange={(event) => updateSetting("timeoutPerRequest", Number(event.target.value) || 5000)}
+                  />
+                </Row>
+                <Row label="Enable AI features:">
+                  <Switch
+                    value={settings.reportLlmEnabled}
+                    onChange={() => updateSetting("reportLlmEnabled", !settings.reportLlmEnabled)}
+                  />
+                </Row>
+                <Row label="Groq endpoint URL:">
+                  <input
+                    value={settings.reportLlmEndpoint}
+                    placeholder="https://api.groq.com/openai/v1/chat/completions"
+                    onChange={(event) => updateSetting("reportLlmEndpoint", event.target.value)}
+                  />
+                </Row>
+                <Row label="Groq model:">
+                  <input
+                    value={settings.reportLlmModel}
+                    placeholder="llama-3.1-8b-instant"
+                    onChange={(event) => updateSetting("reportLlmModel", event.target.value)}
+                  />
+                </Row>
+                <Row label="Groq API key:">
+                  <input
+                    type="password"
+                    value={settings.reportLlmApiKey}
+                    placeholder="gsk_..."
+                    onChange={(event) => updateSetting("reportLlmApiKey", event.target.value)}
                   />
                 </Row>
               </>
@@ -187,6 +219,10 @@ export default function Settings() {
 
             {activeCategory === "Report" ? (
               <>
+                <p className="settings-v2-note">
+                  Groq settings below are reused by scanner connectivity probe, browser login/register payload assistance,
+                  and report AI summary generation.
+                </p>
                 <Row label="Include evidence blocks:">
                   <Switch
                     value={settings.reportIncludeEvidence}
@@ -203,31 +239,31 @@ export default function Settings() {
                     <option value="JSON">JSON</option>
                   </select>
                 </Row>
-                <Row label="Enable AI summary:">
+                <Row label="Enable AI features:">
                   <Switch
                     value={settings.reportLlmEnabled}
                     onChange={() => updateSetting("reportLlmEnabled", !settings.reportLlmEnabled)}
                   />
                 </Row>
-                <Row label="LLM endpoint URL:">
+                <Row label="Groq endpoint URL:">
                   <input
                     value={settings.reportLlmEndpoint}
-                    placeholder="https://your-ngrok-host/api/generate"
+                    placeholder="https://api.groq.com/openai/v1/chat/completions"
                     onChange={(event) => updateSetting("reportLlmEndpoint", event.target.value)}
                   />
                 </Row>
-                <Row label="LLM model:">
+                <Row label="Groq model:">
                   <input
                     value={settings.reportLlmModel}
-                    placeholder="qwen2.5:3b"
+                    placeholder="llama-3.1-8b-instant"
                     onChange={(event) => updateSetting("reportLlmModel", event.target.value)}
                   />
                 </Row>
-                <Row label="LLM API key (optional):">
+                <Row label="Groq API key:">
                   <input
                     type="password"
                     value={settings.reportLlmApiKey}
-                    placeholder="Optional bearer token"
+                    placeholder="gsk_..."
                     onChange={(event) => updateSetting("reportLlmApiKey", event.target.value)}
                   />
                 </Row>

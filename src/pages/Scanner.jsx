@@ -98,6 +98,8 @@ export default function Scanner() {
     runFullScan,
     runQuickScan,
     hydrateStatus,
+    aiProbe,
+    testAiConnection,
   } = useScanStore();
   const {
     fleetStatus,
@@ -115,6 +117,23 @@ export default function Scanner() {
     stopFleet,
     hydrate: hydrateFleet,
   } = useFleetStore();
+
+  const browserUseCoverage = lastScan?.browserUse?.coverage || {
+    inputRoutes: 0,
+    uniqueRoutes: 0,
+    duplicatesSkipped: 0,
+    uiPagesTested: 0,
+    apiRoutesTested: 0,
+    authRoutesTested: 0,
+    mappedUiElements: 0,
+    brokenLinksDetected: 0,
+  };
+  const browserUseInstances = Array.isArray(lastScan?.browserUse?.instances)
+    ? lastScan.browserUse.instances
+    : [];
+  const llmHelpProbe = lastScan?.browserUse?.llmHelpProbe || null;
+  const uiInstance = browserUseInstances.find((instance) => instance.kind === "ui-page") || null;
+  const authInstance = browserUseInstances.find((instance) => instance.kind === "auth-route") || null;
 
   const [activeTab, setActiveTab] = React.useState("all");
   const [expanded, setExpanded] = React.useState({});
@@ -378,6 +397,12 @@ export default function Scanner() {
               <div className="scanner-line"><span>High</span><strong>{lastScan.high}</strong></div>
               <div className="scanner-line"><span>Medium</span><strong>{lastScan.medium}</strong></div>
               <div className="scanner-line"><span>Low</span><strong>{lastScan.low}</strong></div>
+              <div className="scanner-line"><span>Browser Unique Routes</span><strong>{browserUseCoverage.uniqueRoutes}</strong></div>
+              <div className="scanner-line"><span>UI/API/Auth Tested</span><strong>{browserUseCoverage.uiPagesTested}/{browserUseCoverage.apiRoutesTested}/{browserUseCoverage.authRoutesTested}</strong></div>
+              <div className="scanner-line"><span>Mapped UI Elements</span><strong>{browserUseCoverage.mappedUiElements}</strong></div>
+              <div className="scanner-line"><span>Broken Links</span><strong>{browserUseCoverage.brokenLinksDetected}</strong></div>
+              <div className="scanner-line"><span>Duplicate Routes Skipped</span><strong>{browserUseCoverage.duplicatesSkipped}</strong></div>
+              <div className="scanner-line"><span>Browser Test Instances</span><strong>{browserUseInstances.length}</strong></div>
             </div>
           </article>
         </div>
@@ -563,6 +588,57 @@ export default function Scanner() {
         <div className="fleet-activity-body">
           {fleetActivityLog.map((line, index) => (
             <p key={`fleet-activity-${index}`}>{cleanUiText(line)}</p>
+          ))}
+        </div>
+      </section>
+
+      <section className="fleet-activity" style={{ marginTop: 10 }}>
+        <header className="fleet-detail-head"><span>Browser Test Documentation</span></header>
+        <div className="fleet-activity-body">
+          <p>
+            Coverage: input {browserUseCoverage.inputRoutes} | unique {browserUseCoverage.uniqueRoutes} | pages {browserUseCoverage.uiPagesTested} | api {browserUseCoverage.apiRoutesTested} | auth {browserUseCoverage.authRoutesTested}
+          </p>
+          <p>
+            UI map: elements {browserUseCoverage.mappedUiElements} | broken links {browserUseCoverage.brokenLinksDetected}
+          </p>
+          <div className="scanner-live-head-actions" style={{ marginBottom: 6 }}>
+            <button className="scanner-expand-btn" onClick={testAiConnection} disabled={aiProbe.loading}>
+              {aiProbe.loading ? "Checking AI Endpoint..." : "AI Connected Check"}
+            </button>
+            <span>
+              {aiProbe.lastRunAt
+                ? `${aiProbe.ok ? "PASS" : "FAIL"} ${aiProbe.endpoint ? `| ${aiProbe.endpoint}` : ""} ${aiProbe.status ? `| status ${aiProbe.status}` : ""}`
+                : "No manual AI probe yet"}
+            </span>
+          </div>
+          {aiProbe.detail ? <p>{aiProbe.detail}</p> : null}
+          {llmHelpProbe ? (
+            <p>
+              LLM probe: {llmHelpProbe.ok ? "PASS" : "FAIL"} {llmHelpProbe.endpoint ? `(${llmHelpProbe.endpoint})` : ""} {llmHelpProbe.status ? `status ${llmHelpProbe.status}` : ""}
+            </p>
+          ) : (
+            <p>LLM probe: not attempted</p>
+          )}
+          {authInstance?.workflow ? (
+            <p>
+              Auth workflow: register {authInstance.workflow.register?.ok ? "PASS" : "FAIL"} | login {authInstance.workflow.login?.ok ? "PASS" : "FAIL"} | protected {authInstance.workflow.protected?.attempted ? (authInstance.workflow.protected?.ok ? "PASS" : "FAIL") : "N/A"}
+            </p>
+          ) : null}
+          {uiInstance?.brokenLinks && uiInstance.brokenLinks.length > 0 ? (
+            <p>Broken link samples: {uiInstance.brokenLinks.slice(0, 3).map((entry) => `${entry.to} (${entry.status})`).join(" | ")}</p>
+          ) : null}
+          {uiInstance?.mappedPages?.length > 0
+            ? uiInstance.mappedPages.slice(0, 6).map((pageEntry) => (
+                <p key={`mapped-page-${pageEntry.pageUrl}`}>
+                  {pageEntry.pageUrl}: elements {Number(pageEntry.elementCount || 0)} | forms {Number(pageEntry.forms || 0)} | status {Number(pageEntry.status || 0)}
+                </p>
+              ))
+            : null}
+          {browserUseInstances.length === 0 ? <p>No browser-use test instances recorded in last scan.</p> : null}
+          {browserUseInstances.map((instance) => (
+            <p key={instance.instanceId || instance.kind}>
+              {instance.instanceId || instance.kind}: {Number(instance.testedCount || instance.tests?.length || 0)} tests
+            </p>
           ))}
         </div>
       </section>

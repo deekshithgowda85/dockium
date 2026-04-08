@@ -13,7 +13,7 @@ function normalizeFinding(finding, index) {
   return {
     id: finding.id || `nuclei-${Date.now()}-${index}`,
     severity: toSeverityClass(finding.severity),
-    name: finding.title || finding.name || "Unnamed Nuclei finding",
+    name: finding.title || finding.name || "Unnamed Artemis finding",
     endpoint: finding.endpoint || finding.url || "unknown",
     description: finding.description || finding.what || "",
     proof: finding.proof || "",
@@ -106,7 +106,7 @@ export const useNucleiStore = create((set, get) => ({
         loading: false,
         status: {
           ...state.status,
-          lastError: "Nuclei start API unavailable in preload bridge",
+          lastError: "Artemis start API unavailable in preload bridge",
         },
       }));
       return;
@@ -123,7 +123,7 @@ export const useNucleiStore = create((set, get) => ({
           loading: false,
           status: {
             ...state.status,
-            lastError: detail || "Failed to start Nuclei scan",
+            lastError: detail || "Failed to start Artemis scan",
           },
         }));
         return;
@@ -147,7 +147,7 @@ export const useNucleiStore = create((set, get) => ({
         loading: false,
         status: {
           ...state.status,
-          lastError: String(error?.message || "Failed to start Nuclei scan"),
+          lastError: String(error?.message || "Failed to start Artemis scan"),
         },
       }));
     }

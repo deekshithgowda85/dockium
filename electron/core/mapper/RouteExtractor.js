@@ -279,6 +279,26 @@ function substitutePathParams(routePath, params = []) {
   return result
 }
 
+function buildQueryString(params = []) {
+  const search = new URLSearchParams()
+  asArray(params).forEach((param, index) => {
+    const name = String(param?.name || `q${index + 1}`).trim()
+    if (!name) {
+      return
+    }
+
+    const value = String(
+      param?.value
+      ?? param?.sample
+      ?? (String(param?.type || '').toLowerCase().includes('number') ? 1 : 'sample')
+    )
+    search.append(name, value)
+  })
+
+  const serialized = search.toString()
+  return serialized ? `?${serialized}` : ''
+}
+
 async function runCommand(command, args, options = {}) {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
@@ -889,13 +909,20 @@ class RouteExtractor {
   }
 
   async liveProbeRoute(route, targetUrl, authHeaders, requestOverrides = {}) {
-    const overrideParams = asArray(requestOverrides?.params).map((param, index) => ({
+    const overridePathParams = asArray(requestOverrides?.pathParams || requestOverrides?.params).map((param, index) => ({
       name: String(param?.name || `param${index + 1}`),
       sample: String(param?.value || param?.sample || index + 1),
     }))
-    const pathParams = overrideParams.length > 0 ? overrideParams : route.request.pathParams
+    const overrideQueryParams = asArray(requestOverrides?.queryParams).map((param, index) => ({
+      name: String(param?.name || `q${index + 1}`),
+      value: String(param?.value || param?.sample || 'sample'),
+      type: String(param?.type || 'string'),
+    }))
+    const pathParams = overridePathParams.length > 0 ? overridePathParams : route.request.pathParams
+    const queryParams = overrideQueryParams.length > 0 ? overrideQueryParams : route.request.queryParams
     const testPath = substitutePathParams(route.path, pathParams)
-    const url = `${targetUrl.replace(/\/$/, '')}${testPath}`
+    const querySuffix = buildQueryString(queryParams)
+    const url = `${targetUrl.replace(/\/$/, '')}${testPath}${querySuffix}`
     const method = String(requestOverrides?.method || route.method || 'GET').toUpperCase()
     const customBody = requestOverrides?.body
     const requestBody = ['POST', 'PUT', 'PATCH'].includes(method)
@@ -917,7 +944,7 @@ class RouteExtractor {
       },
     }
 
-    if (requestBody && route.method !== 'GET') {
+    if (requestBody && method !== 'GET' && method !== 'HEAD') {
       requestInit.headers['Content-Type'] = 'application/json'
       requestInit.body = JSON.stringify(requestBody)
     }
@@ -943,12 +970,15 @@ class RouteExtractor {
         liveRequest: {
           url,
           method,
+          pathParams,
+          queryParams,
           headers: requestInit.headers,
           body: requestBody,
         },
         liveResponse: {
           statusCode: response.status,
           contentType: response.headers.get('content-type') || route.response.contentType,
+          headers: Object.fromEntries(response.headers.entries()),
           bodyPreview: decoded.raw.slice(0, 3000),
         },
         response: {
@@ -967,6 +997,8 @@ class RouteExtractor {
         liveRequest: {
           url,
           method,
+          pathParams,
+          queryParams,
           headers: requestInit.headers,
           body: requestBody,
         },

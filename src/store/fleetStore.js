@@ -250,7 +250,19 @@ export const useFleetStore = create((set, get) => ({
 
   setBrowserEngine: (value) => set({ browserEngine: value }),
   setHeadless: (value) => set({ headless: value }),
-  setUseProxy: (value) => set({ useProxy: value === true }),
+  setUseProxy: async (value) => {
+    const enabled = value === true;
+    set({ useProxy: enabled });
+
+    if (!enabled) {
+      return;
+    }
+
+    const proxyStatus = await window.dockium?.proxy?.getStatus?.();
+    if (!proxyStatus?.status?.running) {
+      await window.dockium?.proxy?.start?.();
+    }
+  },
   setWindowCount: (value) => set({ windowCount: Math.max(1, Math.min(12, Number(value || 6))) }),
   toggleRoleOption: (roleId) => {
     set((state) => ({
@@ -271,6 +283,13 @@ export const useFleetStore = create((set, get) => ({
       roles: selectedRoles,
       useProxy: get().useProxy === true,
     };
+
+    if (payload.useProxy) {
+      const proxyStatus = await window.dockium?.proxy?.getStatus?.();
+      if (!proxyStatus?.status?.running) {
+        await window.dockium?.proxy?.start?.();
+      }
+    }
 
     const started = await window.dockium?.fleet?.start?.(payload);
     get().applyFleetSnapshot(started?.status || {});

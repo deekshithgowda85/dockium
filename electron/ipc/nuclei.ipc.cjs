@@ -75,7 +75,7 @@ function registerNucleiIpc(ipcMain, deps) {
 
     const rawTarget = String(payload?.targetUrl || config.project.targetUrl || '').trim()
     if (!rawTarget) {
-      return fail('Missing target URL for Nuclei scan', 400, 'Provide payload.targetUrl or configure project target URL')
+      return fail('Missing target URL for Artemis scan', 400, 'Provide payload.targetUrl or configure project target URL')
     }
 
     const scanId = `nuclei-${Date.now()}`
@@ -96,7 +96,7 @@ function registerNucleiIpc(ipcMain, deps) {
 
     getWss?.()?.emit('nuclei_progress', buildStatus(state))
     publishSnapshot(state)
-    getWss?.()?.emitLog(`Nuclei active scan started for ${rawTarget}`)
+    getWss?.()?.emitLog(`Artemis active scan started for ${rawTarget}`)
 
     activePromise = (async () => {
       try {
@@ -105,7 +105,7 @@ function registerNucleiIpc(ipcMain, deps) {
         })
         state.preflight = preflight || null
 
-        state.phaseName = 'preparing-templates'
+        state.phaseName = 'engine-preflight'
         state.percent = 15
         getWss?.()?.emit('nuclei_progress', buildStatus(state))
 
@@ -136,10 +136,10 @@ function registerNucleiIpc(ipcMain, deps) {
         state.percent = 100
         state.phaseName = 'completed'
         state.completedAt = new Date().toISOString()
-        getWss?.()?.emitLog(`Nuclei active scan completed (${state.findings.length} findings)`)
+        getWss?.()?.emitLog(`Artemis active scan completed (${state.findings.length} findings)`)
         publishSnapshot(state)
       } catch (error) {
-        state.lastError = String(error?.message || 'Nuclei scan failed')
+        state.lastError = String(error?.message || 'Artemis scan failed')
         state.diagnostics = {
           templateSetup: error?.templateSetup || null,
           candidates: Array.isArray(error?.candidateAttempts) ? error.candidateAttempts : [],
@@ -147,7 +147,7 @@ function registerNucleiIpc(ipcMain, deps) {
         state.phaseName = 'error'
         state.percent = 0
         state.completedAt = new Date().toISOString()
-        getWss?.()?.emitLog(`Nuclei active scan failed: ${state.lastError}`, 'error')
+        getWss?.()?.emitLog(`Artemis active scan failed: ${state.lastError}`, 'error')
         publishSnapshot(state)
       } finally {
         state.active = false

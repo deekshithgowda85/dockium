@@ -157,19 +157,593 @@ function parseParams(value) {
 }
 
 function defaultTestDraft(route) {
-  const params = Array.isArray(route?.request?.pathParams)
+  const pathParams = Array.isArray(route?.request?.pathParams)
     ? route.request.pathParams.map((item) => `${item.name}=1`).join("\n")
+    : "";
+  const queryParams = Array.isArray(route?.request?.queryParams)
+    ? route.request.queryParams.map((item) => `${item.name}=sample`).join("\n")
     : "";
   const body = route?.request?.bodySchema ? JSON.stringify(route.request.bodySchema, null, 2) : "{}";
   return {
     open: false,
     loading: false,
     headersText: "{}",
-    paramsText: params,
+    paramsText: pathParams,
+    queryText: queryParams,
     bodyText: body,
     result: null,
     error: "",
   };
+}
+
+function isLoginRoute(route) {
+  const pathValue = String(route?.path || route?.fullPath || "").toLowerCase();
+  const method = String(route?.method || "GET").toUpperCase();
+  if (method !== "POST") {
+    return false;
+  }
+  return /(login|signin|auth|session|token)/.test(pathValue);
+}
+
+function isRegisterRoute(route) {
+  const pathValue = String(route?.path || route?.fullPath || "").toLowerCase();
+  const method = String(route?.method || "GET").toUpperCase();
+  if (method !== "POST") {
+    return false;
+  }
+  return /(register|signup|create[-_]?account|users)/.test(pathValue);
+}
+
+const MAX_AUTH_ROUTE_CANDIDATES = 3;
+const MAX_LOGIN_SEED_CANDIDATES = 5;
+const MAX_POST_AUTH_SWEEP_ROUTES = 80;
+
+function authRoutePriority(route, kind) {
+  const pathValue = String(route?.path || route?.fullPath || "").toLowerCase();
+  const sourceFile = String(route?.sourceFile || "").toLowerCase();
+  let score = 0;
+
+  if (/\/api\//.test(pathValue)) {
+    score -= 4;
+  } else if (/\/rest\//.test(pathValue)) {
+    score -= 2;
+  }
+
+  if (kind === "login") {
+    if (/(login|signin|session|token|auth)/.test(pathValue)) {
+      score -= 3;
+    }
+  } else {
+    if (/(register|signup|create[-_]?account)/.test(pathValue)) {
+      score -= 3;
+    }
+    if (/users/.test(pathValue)) {
+      score -= 1;
+    }
+  }
+
+  if (/(swagger|openapi|docs|mock|example)/.test(pathValue)) {
+    score += 8;
+  }
+  if (/(node_modules|dist|build)/.test(sourceFile)) {
+    score += 3;
+  }
+
+  return score;
+}
+
+function pickAuthRouteCandidates(routes = [], kind = "login") {
+  const matcher = kind === "register" ? isRegisterRoute : isLoginRoute;
+  return routes
+    .filter((route) => matcher(route))
+    .sort((a, b) => {
+      const diff = authRoutePriority(a, kind) - authRoutePriority(b, kind);
+      if (diff !== 0) {
+        return diff;
+      }
+      return String(a?.path || "").localeCompare(String(b?.path || ""));
+    })
+    .slice(0, MAX_AUTH_ROUTE_CANDIDATES);
+}
+
+function sampleValueFromSchema(schema, fallback = "sample") {
+  if (!schema || typeof schema !== "object") {
+    return fallback;
+  }
+
+  const schemaType = String(schema.type || "").toLowerCase();
+  if (schemaType === "number" || schemaType === "integer") {
+    return 1;
+  }
+  if (schemaType === "boolean") {
+    return true;
+  }
+  if (schemaType === "array") {
+    return [];
+  }
+  if (schemaType === "object") {
+    const props = schema.properties && typeof schema.properties === "object"
+      ? schema.properties
+      : {};
+    const out = {};
+    Object.keys(props).forEach((key) => {
+      out[key] = sampleValueFromSchema(props[key], key);
+    });
+    return out;
+  }
+  return fallback;
+}
+
+function resolveValueForField(fieldName, values = {}) {
+  const key = String(fieldName || "").toLowerCase();
+  if (key.includes("email")) return values.email;
+  if (key.includes("user") || key.includes("login") || key.includes("identifier")) return values.username;
+  if (key.includes("pass")) return values.password;
+  if (key.includes("name")) return values.name;
+  if (key.includes("token")) return values.token;
+  return values.fallback;
+}
+
+function buildAuthPayload(route, kind, credentialSeed = {}) {
+  const schema = route?.request?.bodySchema;
+  const seedEmail = String(credentialSeed?.email || "user@dockium.local").trim();
+  const seedPassword = String(credentialSeed?.password || "Password123!").trim();
+  const usernamePart = seedEmail.includes("@") ? seedEmail.slice(0, seedEmail.indexOf("@")) : seedEmail;
+  const registerEmail = `${usernamePart || "dockium"}+${Date.now()}@example.com`;
+
+  const values = {
+    email: kind === "register" ? registerEmail : seedEmail,
+    username: kind === "register" ? registerEmail : (usernamePart || seedEmail),
+    password: seedPassword,
+    name: "Dockium Test User",
+    securityQuestionId: Number(credentialSeed?.securityQuestionId || 1) || 1,
+    securityQuestionObject: credentialSeed?.securityQuestionObject && typeof credentialSeed.securityQuestionObject === "object"
+      ? credentialSeed.securityQuestionObject
+      : { id: Number(credentialSeed?.securityQuestionId || 1) || 1 },
+    securityAnswer: String(credentialSeed?.securityAnswer || "dockium-generic-answer").trim() || "dockium-generic-answer",
+    token: "",
+    fallback: kind,
+  };
+
+  if (schema && typeof schema === "object") {
+    const sampled = sampleValueFromSchema(schema, kind === "login" ? "credential" : "value");
+    if (sampled && typeof sampled === "object") {
+      const hydrated = { ...sampled };
+      Object.keys(hydrated).forEach((field) => {
+        hydrated[field] = resolveValueForField(field, values);
+      });
+      if (Object.keys(hydrated).length > 0) {
+        return hydrated;
+      }
+    }
+  }
+
+  if (kind === "login") {
+    return {
+      email: values.email,
+      username: values.username,
+      login: values.username,
+      password: values.password,
+      identifier: values.email,
+    };
+  }
+
+  return {
+    email: values.email,
+    username: values.username,
+    login: values.username,
+    password: values.password,
+    confirmPassword: values.password,
+    passwordRepeat: values.password,
+    repeatPassword: values.password,
+    confirm: values.password,
+    name: values.name,
+    securityQuestion: values.securityQuestionObject,
+    securityQuestionId: values.securityQuestionId,
+    securityAnswer: values.securityAnswer,
+  };
+}
+
+function uniquePayloadVariants(variants = []) {
+  const out = [];
+  const seen = new Set();
+
+  variants.forEach((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      return;
+    }
+
+    const normalized = {};
+    Object.keys(entry)
+      .sort((a, b) => a.localeCompare(b))
+      .forEach((key) => {
+        normalized[key] = entry[key];
+      });
+
+    const key = JSON.stringify(normalized);
+    if (seen.has(key)) {
+      return;
+    }
+
+    seen.add(key);
+    out.push(entry);
+  });
+
+  return out;
+}
+
+function authPayloadVariants(route, kind, credentialSeed = {}) {
+  const base = buildAuthPayload(route, kind, credentialSeed);
+  const email = String(base.email || credentialSeed?.email || "user@dockium.local");
+  const username = String(base.username || email.split("@")[0] || "dockium");
+  const password = String(base.password || credentialSeed?.password || "Password123!");
+  const name = String(base.name || "Dockium Test User");
+  const securityQuestionId = Number(credentialSeed?.securityQuestionId || base?.securityQuestionId || 1) || 1;
+  const securityQuestionObject = credentialSeed?.securityQuestionObject && typeof credentialSeed.securityQuestionObject === "object"
+    ? credentialSeed.securityQuestionObject
+    : (base?.securityQuestion && typeof base.securityQuestion === "object" ? base.securityQuestion : { id: securityQuestionId });
+  const securityAnswer = String(credentialSeed?.securityAnswer || base?.securityAnswer || "dockium-generic-answer").trim() || "dockium-generic-answer";
+
+  if (kind === "login") {
+    return uniquePayloadVariants([
+      { email, password },
+      { username, password },
+      { email: username, password },
+      { login: username, password },
+      { identifier: email, password },
+      { emailOrUsername: email, password },
+      { user: { email, password } },
+      { credentials: { email, password } },
+      base,
+    ]);
+  }
+
+  return uniquePayloadVariants([
+    {
+      email,
+      password,
+      passwordRepeat: password,
+      securityQuestion: securityQuestionObject,
+      securityAnswer,
+    },
+    {
+      email,
+      password,
+      passwordRepeat: password,
+    },
+    {
+      email,
+      password,
+      confirmPassword: password,
+    },
+    { email, username, password, name },
+    {
+      email,
+      password,
+      confirmPassword: password,
+      passwordRepeat: password,
+      securityQuestion: securityQuestionObject,
+      securityQuestionId,
+      securityAnswer,
+      name,
+    },
+    {
+      email,
+      password,
+      passwordRepeat: password,
+      repeatPassword: password,
+      securityQuestion: securityQuestionObject,
+      securityQuestionId,
+      securityAnswer,
+      name,
+    },
+    { username, password, confirmPassword: password, passwordRepeat: password, repeatPassword: password, name },
+    { email, username, password, name, securityQuestionId, securityAnswer },
+    { login: username, password, confirmPassword: password, passwordRepeat: password, repeatPassword: password, name },
+    { email, password, passwordConfirmation: password, name },
+    base,
+  ]);
+}
+
+function credentialCandidates(config = {}) {
+  const credentials = config?.credentials && typeof config.credentials === "object"
+    ? config.credentials
+    : {};
+
+  const candidates = [];
+  const testUserEmail = String(credentials.testUserEmail || "").trim();
+  const testUserPass = String(credentials.testUserPass || "").trim();
+  if (testUserEmail && testUserPass) {
+    candidates.push({ email: testUserEmail, password: testUserPass, source: "test-user" });
+  }
+
+  const adminEmail = String(credentials.adminEmail || "").trim();
+  const adminPassword = String(credentials.adminPassword || "").trim();
+  if (adminEmail && adminPassword) {
+    candidates.push({ email: adminEmail, password: adminPassword, source: "admin-user" });
+  }
+
+  if (candidates.length === 0) {
+    candidates.push({ email: "user@dockium.local", password: "Password123!", source: "fallback" });
+    candidates.push({ email: "test@example.com", password: "Password123!", source: "fallback-alt-1" });
+    candidates.push({ email: "admin@example.com", password: "Password123!", source: "fallback-alt-2" });
+  }
+  return candidates;
+}
+
+function isProtectedRoute(route) {
+  const method = String(route?.method || "GET").toUpperCase();
+  if (method !== "GET") {
+    return false;
+  }
+  if (route?.authRequired) {
+    return true;
+  }
+  const pathValue = String(route?.path || route?.fullPath || "").toLowerCase();
+  return /(\/me|\/profile|\/account|\/users\/|\/admin)/.test(pathValue);
+}
+
+function protectedRouteScore(route) {
+  const pathValue = String(route?.path || route?.fullPath || "").toLowerCase();
+  if (/(\/me|\/whoami|\/profile|\/account)/.test(pathValue)) {
+    return 0;
+  }
+  if (/\/users\//.test(pathValue) && !/\/admin/.test(pathValue)) {
+    return 1;
+  }
+  if (/\/admin/.test(pathValue)) {
+    return 5;
+  }
+  return route?.authRequired ? 2 : 3;
+}
+
+function parseBodyPreviewAsJson(result) {
+  const raw = String(result?.liveResponse?.bodyPreview || "").trim();
+  if (!raw) {
+    return null;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function extractTokenFromObject(payload) {
+  if (!payload || typeof payload !== "object") {
+    return "";
+  }
+
+  const direct = [
+    payload.token,
+    payload.access_token,
+    payload.accessToken,
+    payload.jwt,
+    payload.id_token,
+    payload.idToken,
+    payload.authToken,
+  ];
+  for (const candidate of direct) {
+    const value = String(candidate || "").trim();
+    if (value) {
+      return value;
+    }
+  }
+
+  for (const nested of [payload.data, payload.result, payload.user, payload.authentication]) {
+    const nestedToken = extractTokenFromObject(nested);
+    if (nestedToken) {
+      return nestedToken;
+    }
+  }
+
+  return "";
+}
+
+function extractAuthArtifact(result) {
+  const payload = parseBodyPreviewAsJson(result);
+  const token = extractTokenFromObject(payload);
+  const headers = result?.liveResponse?.headers && typeof result.liveResponse.headers === "object"
+    ? result.liveResponse.headers
+    : {};
+  const setCookieRaw = headers["set-cookie"] || headers["Set-Cookie"] || "";
+  const cookie = String(Array.isArray(setCookieRaw) ? setCookieRaw[0] : setCookieRaw)
+    .split(";")[0]
+    .trim();
+  return {
+    token,
+    cookie,
+  };
+}
+
+function extractSecurityQuestionSeed(result) {
+  const payload = parseBodyPreviewAsJson(result);
+  const root = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.data)
+      ? payload.data
+      : Array.isArray(payload?.result)
+        ? payload.result
+        : [];
+
+  const first = root.find((entry) => entry && typeof entry === "object") || null;
+  const id = Number(first?.id || first?.questionId || 0);
+  if (!id) {
+    return null;
+  }
+
+  return {
+    securityQuestionId: id,
+    securityQuestionObject: first,
+    securityAnswer: "dockium-generic-answer",
+  };
+}
+
+const GROQ_CHAT_COMPLETIONS_URL = "https://api.groq.com/openai/v1/chat/completions";
+const GROQ_DEFAULT_MODEL = "llama-3.1-8b-instant";
+const GROQ_AUTH_PROMPT_MAX_CHARS = 2200;
+const GROQ_AUTH_MAX_TOKENS = 220;
+
+function clipText(value, maxLength = 420) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  if (text.length <= maxLength) {
+    return text;
+  }
+  return `${text.slice(0, Math.max(1, maxLength - 3))}...`;
+}
+
+function parseAiPayloadCandidates(rawText) {
+  const raw = String(rawText || "").trim();
+  if (!raw) {
+    return [];
+  }
+
+  const direct = parseJsonLoose(raw, null);
+  if (Array.isArray(direct)) {
+    return direct.filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry));
+  }
+  if (direct && typeof direct === "object") {
+    if (Array.isArray(direct.payloads)) {
+      return direct.payloads.filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry));
+    }
+    if (direct.payload && typeof direct.payload === "object" && !Array.isArray(direct.payload)) {
+      return [direct.payload];
+    }
+  }
+
+  const fencedMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (!fencedMatch) {
+    return [];
+  }
+
+  const fencedParsed = parseJsonLoose(String(fencedMatch[1] || "").trim(), null);
+  if (Array.isArray(fencedParsed)) {
+    return fencedParsed.filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry));
+  }
+  if (fencedParsed && typeof fencedParsed === "object") {
+    if (Array.isArray(fencedParsed.payloads)) {
+      return fencedParsed.payloads.filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry));
+    }
+    if (fencedParsed.payload && typeof fencedParsed.payload === "object" && !Array.isArray(fencedParsed.payload)) {
+      return [fencedParsed.payload];
+    }
+  }
+
+  return [];
+}
+
+async function suggestAiAuthPayloads(route, kind, credentialSeed, attemptedStatuses = [], failurePreview = "") {
+  const settings = await window.dockium?.settingsGetAll?.();
+  const enabled = settings?.reportLlmEnabled === true;
+  const endpoint = String(settings?.reportLlmEndpoint || GROQ_CHAT_COMPLETIONS_URL).trim() || GROQ_CHAT_COMPLETIONS_URL;
+  const model = String(settings?.reportLlmModel || GROQ_DEFAULT_MODEL).trim() || GROQ_DEFAULT_MODEL;
+  const apiKey = String(settings?.reportLlmApiKey || "").trim();
+
+  if (!enabled) {
+    return {
+      attempted: false,
+      status: 0,
+      detail: "LLM payload suggestion skipped because reportLlmEnabled=false.",
+      payloads: [],
+    };
+  }
+
+  if (!apiKey) {
+    return {
+      attempted: false,
+      status: 0,
+      detail: "LLM payload suggestion skipped because Groq API key is missing.",
+      payloads: [],
+    };
+  }
+
+  const seedEmail = String(credentialSeed?.email || "").trim();
+  const seedUsername = String(credentialSeed?.username || seedEmail.split("@")[0] || "").trim();
+  const seedPassword = String(credentialSeed?.password || "Password123!").trim();
+  const pathValue = String(route?.path || route?.fullPath || "");
+
+  const prompt = [
+    "You are helping API auth compatibility testing.",
+    "Return JSON only. No markdown.",
+    `Task: provide at most 4 candidate ${kind} request payload objects for endpoint path ${pathValue}.`,
+    "Use only plain object payloads. securityQuestion may be nested.",
+    "Common fields: email, username, login, identifier, password, passwordRepeat, confirmPassword, securityQuestion, securityAnswer, name.",
+    `Credential seed email: ${seedEmail}`,
+    `Credential seed username: ${seedUsername}`,
+    `Credential seed password: ${seedPassword}`,
+    `Recent attempted statuses: ${attemptedStatuses.join(",") || "none"}`,
+    `Recent failure response hint: ${clipText(failurePreview, 160) || "none"}`,
+    "Output format: {\"payloads\":[{...},{...}]}",
+  ].join("\n");
+
+  const promptBudgeted = clipText(prompt, GROQ_AUTH_PROMPT_MAX_CHARS);
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 3500);
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        Authorization: /^bearer\s+/i.test(apiKey) ? apiKey : `Bearer ${apiKey}`,
+        "User-Agent": "Dockium-AppMap/1.0",
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: "Return only valid JSON payload candidates." },
+          { role: "user", content: promptBudgeted },
+        ],
+        temperature: 0.2,
+        max_tokens: GROQ_AUTH_MAX_TOKENS,
+      }),
+      signal: controller.signal,
+    });
+
+    const status = Number(response.status || 0);
+    const raw = await response.text();
+    const parsed = parseJsonLoose(raw, null);
+    const modelText = String(
+      parsed?.choices?.[0]?.message?.content
+      || parsed?.choices?.[0]?.text
+      || parsed?.response
+      || parsed?.message?.content
+      || parsed?.output
+      || raw
+    );
+
+    if (!response.ok) {
+      return {
+        attempted: true,
+        status,
+        detail: `LLM payload suggestion failed with status ${status}.`,
+        payloads: [],
+      };
+    }
+
+    const payloads = uniquePayloadVariants(parseAiPayloadCandidates(modelText)).slice(0, 4);
+    return {
+      attempted: true,
+      status,
+      detail: payloads.length > 0
+        ? `LLM suggested ${payloads.length} auth payload candidate(s).`
+        : "LLM returned no parseable payload candidates.",
+      payloads,
+    };
+  } catch (error) {
+    return {
+      attempted: true,
+      status: 0,
+      detail: String(error?.message || "LLM payload suggestion failed"),
+      payloads: [],
+    };
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 function syncDataFromAppMap(set, appMap, scanStatus) {
@@ -239,6 +813,13 @@ export const useMapStore = create((set, get) => ({
   expandedFolders: {},
   expandedRoutes: {},
   routeTests: {},
+  authRouteChecks: {
+    loading: false,
+    error: "",
+    lastRunAt: null,
+    results: [],
+    workflow: null,
+  },
 
   hydrate: async () => {
     set({ loading: true, error: "" });
@@ -381,7 +962,8 @@ export const useMapStore = create((set, get) => ({
 
     const draft = state.routeTests[routeId] || defaultTestDraft(route);
     const headers = parseHeaders(draft.headersText);
-    const params = parseParams(draft.paramsText);
+    const pathParams = parseParams(draft.paramsText);
+    const queryParams = parseParams(draft.queryText);
     const parsedBody = parseJsonLoose(draft.bodyText, draft.bodyText);
 
     set((inner) => ({
@@ -399,7 +981,8 @@ export const useMapStore = create((set, get) => ({
       route,
       authToken: state.appliedToken,
       headers,
-      params,
+      pathParams,
+      queryParams,
       body: parsedBody,
       method: route.method,
     });
@@ -415,5 +998,606 @@ export const useMapStore = create((set, get) => ({
         },
       },
     }));
+  },
+
+  runAuthRouteChecks: async () => {
+    const state = get();
+    const routes = Array.isArray(state.routes) ? state.routes : [];
+    const registerRouteCandidates = pickAuthRouteCandidates(routes, "register");
+    const loginRouteCandidates = pickAuthRouteCandidates(routes, "login");
+    const protectedRoute = routes
+      .filter((route) => isProtectedRoute(route))
+      .sort((a, b) => protectedRouteScore(a) - protectedRouteScore(b))[0] || null;
+    const securityQuestionRoute = routes.find((route) => {
+      const method = String(route?.method || "GET").toUpperCase();
+      const pathValue = String(route?.path || route?.fullPath || "").toLowerCase();
+      return method === "GET" && /security[-_]?question/.test(pathValue);
+    }) || null;
+
+    if (registerRouteCandidates.length === 0 && loginRouteCandidates.length === 0) {
+      set({
+        authRouteChecks: {
+          loading: false,
+          error: "No login/register POST routes discovered in current app map.",
+          lastRunAt: new Date().toISOString(),
+          results: [],
+          workflow: null,
+        },
+      });
+      return;
+    }
+
+    set({
+      authRouteChecks: {
+        loading: true,
+        error: "",
+        lastRunAt: null,
+        results: [],
+        workflow: null,
+      },
+    });
+
+    const configResponse = await window.dockium?.project?.getConfig?.();
+    const config = configResponse?.ok ? (configResponse.config || {}) : {};
+    const credentialPool = credentialCandidates(config);
+    let discoveredSecuritySeed = null;
+    if (securityQuestionRoute) {
+      const securityProbe = await window.dockium?.project?.testRoute?.({
+        route: securityQuestionRoute,
+        authToken: "",
+        headers: {},
+        pathParams: [],
+        queryParams: [],
+        body: null,
+        method: securityQuestionRoute.method,
+      });
+      discoveredSecuritySeed = extractSecurityQuestionSeed(securityProbe?.result || null);
+    }
+    const workflow = {
+      register: {
+        attempted: registerRouteCandidates.length > 0,
+        ok: false,
+        statusCode: 0,
+        path: registerRouteCandidates[0]?.path || "",
+        detail: "",
+      },
+      login: {
+        attempted: loginRouteCandidates.length > 0,
+        ok: false,
+        statusCode: 0,
+        path: loginRouteCandidates[0]?.path || "",
+        detail: "",
+      },
+      protected: {
+        attempted: false,
+        ok: false,
+        statusCode: 0,
+        path: protectedRoute?.path || "",
+        detail: "",
+      },
+      authArtifact: {
+        token: false,
+        cookie: false,
+      },
+      aiPayloadHelp: {
+        attempted: false,
+        used: false,
+        status: 0,
+        detail: "",
+      },
+      postAuthSweep: {
+        attempted: false,
+        tested: 0,
+        passed: 0,
+        failed: 0,
+        pageRoutes: 0,
+        apiRoutes: 0,
+        detail: "",
+      },
+    };
+
+    const results = [];
+    let createdCredential = null;
+    let persistedAuthArtifact = "";
+
+    async function runAuthVariants(route, kind, seed) {
+      if (!route) {
+        return {
+          ok: false,
+          statusCode: 0,
+          error: "Route not found",
+          pickedPayload: null,
+          triedStatuses: [],
+          credentialSource: seed?.source || "unknown",
+          routeResult: null,
+        };
+      }
+
+      const variants = authPayloadVariants(route, kind, seed);
+      let pickedResponse = null;
+      let pickedPayload = null;
+      let pickedStatusCode = 0;
+      let pickedSource = "heuristic";
+      const triedStatuses = [];
+      const seenPayloads = new Set();
+      let responsePreviewForAi = "";
+
+      function shouldEscalateToAiSoon() {
+        if (triedStatuses.length < 3) {
+          return false;
+        }
+
+        const recent = triedStatuses.slice(-3).filter((code) => Number(code || 0) > 0);
+        if (recent.length < 3) {
+          return false;
+        }
+
+        const repeatedStatus = new Set(recent).size === 1;
+        const allUnauthorized = recent.every((code) => code === 401 || code === 403);
+        const allServerErrors = recent.every((code) => code >= 500);
+        return repeatedStatus || allUnauthorized || allServerErrors;
+      }
+
+      async function testVariantPayload(variant, source = "heuristic") {
+        const signature = JSON.stringify(variant || {});
+        if (seenPayloads.has(signature)) {
+          return { skipped: true, success: false };
+        }
+        seenPayloads.add(signature);
+
+        const response = await window.dockium?.project?.testRoute?.({
+          route,
+          authToken: "",
+          headers: {},
+          pathParams: [],
+          queryParams: [],
+          body: variant,
+          method: route.method,
+        });
+
+        const statusCode = Number(response?.result?.liveResponse?.statusCode || 0);
+        const success = kind === "register"
+          ? Boolean(response?.ok && ((statusCode >= 200 && statusCode < 300) || statusCode === 409))
+          : Boolean(response?.ok && statusCode >= 200 && statusCode < 300);
+
+        triedStatuses.push(statusCode || 0);
+
+        const bodyPreview = clipText(String(response?.result?.liveResponse?.bodyPreview || ""), 160);
+        if (!responsePreviewForAi && bodyPreview && !success) {
+          responsePreviewForAi = bodyPreview;
+        }
+
+        if (!pickedResponse) {
+          pickedResponse = response;
+          pickedPayload = variant;
+          pickedStatusCode = statusCode;
+          pickedSource = source;
+        }
+
+        if (success) {
+          pickedResponse = response;
+          pickedPayload = variant;
+          pickedStatusCode = statusCode;
+          pickedSource = source;
+          return { skipped: false, success: true };
+        }
+
+        if ((pickedStatusCode || 0) === 0 && statusCode > 0) {
+          pickedResponse = response;
+          pickedPayload = variant;
+          pickedStatusCode = statusCode;
+          pickedSource = source;
+        }
+
+        return { skipped: false, success: false };
+      }
+
+      for (const variant of variants) {
+        const tried = await testVariantPayload(variant, "heuristic");
+        if (tried.success) {
+          break;
+        }
+        if (shouldEscalateToAiSoon()) {
+          break;
+        }
+      }
+
+      if (!(pickedStatusCode >= 200 && pickedStatusCode < 300) && !(kind === "register" && pickedStatusCode === 409)) {
+        const aiSuggestion = await suggestAiAuthPayloads(route, kind, seed, triedStatuses, responsePreviewForAi);
+        workflow.aiPayloadHelp.attempted = workflow.aiPayloadHelp.attempted || Boolean(aiSuggestion.attempted);
+        workflow.aiPayloadHelp.status = Number(aiSuggestion.status || workflow.aiPayloadHelp.status || 0);
+        workflow.aiPayloadHelp.detail = aiSuggestion.detail || workflow.aiPayloadHelp.detail;
+
+        if (Array.isArray(aiSuggestion.payloads) && aiSuggestion.payloads.length > 0) {
+          workflow.aiPayloadHelp.used = true;
+          for (const payload of aiSuggestion.payloads) {
+            const tried = await testVariantPayload(payload, "ai");
+            if (tried.success) {
+              break;
+            }
+          }
+        }
+      }
+
+      const previewBody = clipText(String(pickedResponse?.result?.liveResponse?.bodyPreview || ""), 280);
+
+      return {
+        ok: Boolean(pickedResponse?.ok),
+        statusCode: pickedStatusCode,
+        error: pickedResponse?.ok ? "" : String(pickedResponse?.error || "Route test failed"),
+        pickedPayload,
+        triedStatuses,
+        responsePreview: previewBody,
+        credentialSource: seed?.source || "unknown",
+        payloadSource: pickedSource,
+        routeResult: pickedResponse?.result || null,
+      };
+    }
+
+    if (registerRouteCandidates.length > 0) {
+      let selectedRegisterRoute = registerRouteCandidates[0];
+      let selectedRegisterOutcome = null;
+
+      for (const candidateRoute of registerRouteCandidates) {
+        const registerOutcome = await runAuthVariants(candidateRoute, "register", {
+          ...(credentialPool[0] || {}),
+          ...(discoveredSecuritySeed || {}),
+        });
+        const registerSuccess = registerOutcome.statusCode >= 200
+          && (registerOutcome.statusCode < 300 || registerOutcome.statusCode === 409);
+
+        results.push({
+          routeId: candidateRoute.id,
+          kind: "register",
+          method: candidateRoute.method,
+          path: candidateRoute.path,
+          statusCode: registerOutcome.statusCode,
+          ok: registerSuccess,
+          error: registerOutcome.error || (!registerSuccess ? `HTTP ${registerOutcome.statusCode || 0}` : ""),
+          credentialSource: registerOutcome.credentialSource,
+          payloadSource: registerOutcome.payloadSource,
+          payloadKeys: Object.keys(registerOutcome.pickedPayload || {}),
+          triedStatuses: registerOutcome.triedStatuses,
+          responsePreview: registerOutcome.responsePreview,
+        });
+
+        if (!selectedRegisterOutcome) {
+          selectedRegisterRoute = candidateRoute;
+          selectedRegisterOutcome = registerOutcome;
+        }
+
+        if (registerSuccess) {
+          selectedRegisterRoute = candidateRoute;
+          selectedRegisterOutcome = registerOutcome;
+          break;
+        }
+
+        if ((selectedRegisterOutcome?.statusCode || 0) === 0 && (registerOutcome.statusCode || 0) > 0) {
+          selectedRegisterRoute = candidateRoute;
+          selectedRegisterOutcome = registerOutcome;
+        }
+      }
+
+      const registerOutcome = selectedRegisterOutcome || {
+        statusCode: 0,
+        error: "Register route test failed",
+        pickedPayload: null,
+        credentialSource: "unknown",
+        payloadSource: "heuristic",
+        triedStatuses: [],
+        responsePreview: "",
+      };
+      const registerSuccess = registerOutcome.statusCode >= 200
+        && (registerOutcome.statusCode < 300 || registerOutcome.statusCode === 409);
+
+      workflow.register.path = selectedRegisterRoute?.path || workflow.register.path;
+      workflow.register.ok = registerSuccess;
+      workflow.register.statusCode = registerOutcome.statusCode;
+      workflow.register.detail = registerOutcome.error || registerOutcome.responsePreview || "";
+
+      if (registerSuccess) {
+        createdCredential = {
+          email: String(
+            registerOutcome.pickedPayload?.email
+            || registerOutcome.pickedPayload?.username
+            || credentialPool[0]?.email
+            || ""
+          ).trim(),
+          password: String(registerOutcome.pickedPayload?.password || credentialPool[0]?.password || "").trim(),
+          source: registerOutcome.statusCode === 409 ? "register-existing" : "register-created",
+        };
+      } else if (registerOutcome?.pickedPayload) {
+        const attemptedEmail = String(
+          registerOutcome.pickedPayload?.email
+          || registerOutcome.pickedPayload?.username
+          || registerOutcome.pickedPayload?.login
+          || ""
+        ).trim();
+        const attemptedPassword = String(registerOutcome.pickedPayload?.password || "").trim();
+        if (attemptedEmail && attemptedPassword) {
+          createdCredential = {
+            email: attemptedEmail,
+            password: attemptedPassword,
+            source: "register-attempt-payload",
+          };
+        }
+      }
+    }
+
+    let loginArtifact = { token: "", cookie: "" };
+    if (loginRouteCandidates.length > 0) {
+      const loginSeeds = [];
+      if (createdCredential?.email && createdCredential?.password) {
+        loginSeeds.push(createdCredential);
+      }
+      credentialPool.forEach((candidate) => {
+        const email = String(candidate?.email || "").trim();
+        const password = String(candidate?.password || "").trim();
+        if (!email || !password) {
+          return;
+        }
+        const exists = loginSeeds.some((seed) => seed.email === email && seed.password === password);
+        if (!exists) {
+          loginSeeds.push(candidate);
+        }
+      });
+      const boundedLoginSeeds = loginSeeds.slice(0, MAX_LOGIN_SEED_CANDIDATES);
+
+      let selectedLoginRoute = loginRouteCandidates[0];
+      let selectedLoginOutcome = null;
+
+      for (const loginRoute of loginRouteCandidates) {
+        let loginOutcome = null;
+        const combinedStatuses = [];
+
+        for (const loginSeed of boundedLoginSeeds) {
+          const attempt = await runAuthVariants(loginRoute, "login", loginSeed);
+          combinedStatuses.push(...attempt.triedStatuses);
+
+          if (!loginOutcome) {
+            loginOutcome = attempt;
+          }
+
+          const attemptOk = attempt.statusCode >= 200 && attempt.statusCode < 300;
+          if (attemptOk) {
+            loginOutcome = {
+              ...attempt,
+              triedStatuses: combinedStatuses,
+            };
+            break;
+          }
+
+          if ((loginOutcome.statusCode || 0) === 0 && (attempt.statusCode || 0) > 0) {
+            loginOutcome = {
+              ...attempt,
+              triedStatuses: combinedStatuses,
+            };
+          }
+        }
+
+        loginOutcome = loginOutcome || {
+          ok: false,
+          statusCode: 0,
+          error: "Login route test failed",
+          pickedPayload: null,
+          triedStatuses: combinedStatuses,
+          credentialSource: "unknown",
+          routeResult: null,
+        };
+
+        const loginSuccess = loginOutcome.statusCode >= 200 && loginOutcome.statusCode < 300;
+
+        results.push({
+          routeId: loginRoute.id,
+          kind: "login",
+          method: loginRoute.method,
+          path: loginRoute.path,
+          statusCode: loginOutcome.statusCode,
+          ok: loginSuccess,
+          error: loginOutcome.error || (!loginSuccess ? `HTTP ${loginOutcome.statusCode || 0}` : ""),
+          credentialSource: loginOutcome.credentialSource,
+          payloadSource: loginOutcome.payloadSource,
+          payloadKeys: Object.keys(loginOutcome.pickedPayload || {}),
+          triedStatuses: loginOutcome.triedStatuses,
+          responsePreview: loginOutcome.responsePreview,
+        });
+
+        if (!selectedLoginOutcome) {
+          selectedLoginRoute = loginRoute;
+          selectedLoginOutcome = loginOutcome;
+        }
+
+        if (loginSuccess) {
+          selectedLoginRoute = loginRoute;
+          selectedLoginOutcome = loginOutcome;
+          break;
+        }
+
+        if ((selectedLoginOutcome?.statusCode || 0) === 0 && (loginOutcome.statusCode || 0) > 0) {
+          selectedLoginRoute = loginRoute;
+          selectedLoginOutcome = loginOutcome;
+        }
+      }
+
+      const loginOutcome = selectedLoginOutcome || {
+        ok: false,
+        statusCode: 0,
+        error: "Login route test failed",
+        pickedPayload: null,
+        triedStatuses: combinedStatuses,
+        credentialSource: "unknown",
+        routeResult: null,
+      };
+
+      const loginSuccess = loginOutcome.statusCode >= 200 && loginOutcome.statusCode < 300;
+      const artifact = extractAuthArtifact(loginOutcome.routeResult);
+      loginArtifact = artifact;
+
+      workflow.login.path = selectedLoginRoute?.path || workflow.login.path;
+      workflow.login.ok = loginSuccess;
+      workflow.login.statusCode = loginOutcome.statusCode;
+      workflow.login.detail = loginOutcome.error || loginOutcome.responsePreview || "";
+      workflow.authArtifact.token = Boolean(artifact.token);
+      workflow.authArtifact.cookie = Boolean(artifact.cookie);
+      persistedAuthArtifact = artifact.token || artifact.cookie || "";
+    }
+
+    if (protectedRoute && (loginArtifact.token || loginArtifact.cookie)) {
+      workflow.protected.attempted = true;
+      const authHeaders = {
+        ...(loginArtifact.cookie ? { Cookie: loginArtifact.cookie } : {}),
+        ...(loginArtifact.token
+          ? {
+              Authorization: /^bearer\s+/i.test(loginArtifact.token)
+                ? loginArtifact.token
+                : `Bearer ${loginArtifact.token}`,
+            }
+          : {}),
+      };
+      const response = await window.dockium?.project?.testRoute?.({
+        route: protectedRoute,
+        authToken: "",
+        headers: authHeaders,
+        pathParams: [],
+        queryParams: [],
+        body: null,
+        method: protectedRoute.method,
+      });
+
+      const statusCode = Number(response?.result?.liveResponse?.statusCode || 0);
+      const protectedOk = Boolean(response?.ok && statusCode >= 200 && statusCode < 400);
+      workflow.protected.ok = protectedOk;
+      workflow.protected.statusCode = statusCode;
+      workflow.protected.detail = response?.ok ? "" : String(response?.error || "Route test failed");
+
+      results.push({
+        routeId: protectedRoute.id,
+        kind: "protected",
+        method: protectedRoute.method,
+        path: protectedRoute.path,
+        statusCode,
+        ok: protectedOk,
+        error: response?.ok ? "" : String(response?.error || "Route test failed"),
+        credentialSource: loginArtifact.cookie ? "session-cookie" : "bearer-token",
+        payloadKeys: [],
+        triedStatuses: [statusCode],
+      });
+    }
+
+    if (persistedAuthArtifact) {
+      const authHeaders = {
+        ...(loginArtifact.cookie ? { Cookie: loginArtifact.cookie } : {}),
+        ...(loginArtifact.token
+          ? {
+              Authorization: /^bearer\s+/i.test(loginArtifact.token)
+                ? loginArtifact.token
+                : `Bearer ${loginArtifact.token}`,
+            }
+          : {}),
+      };
+
+      const sweepCandidates = routes
+        .filter((route) => {
+          const method = String(route?.method || "GET").toUpperCase();
+          return method === "GET" || method === "HEAD";
+        })
+        .slice(0, MAX_POST_AUTH_SWEEP_ROUTES);
+
+      let tested = 0;
+      let passed = 0;
+      let failed = 0;
+      let pageRoutes = 0;
+      let apiRoutes = 0;
+      const failedSamples = [];
+
+      for (const route of sweepCandidates) {
+        const pathValue = String(route?.path || route?.fullPath || "").toLowerCase();
+        if (pathValue.startsWith("/api/") || pathValue.startsWith("/rest/") || pathValue === "/api" || pathValue === "/rest") {
+          apiRoutes += 1;
+        } else {
+          pageRoutes += 1;
+        }
+
+        const pathParams = Array.isArray(route?.request?.pathParams)
+          ? route.request.pathParams.map((param) => ({
+              name: String(param?.name || "id"),
+              value: String(param?.value || "1"),
+            }))
+          : [];
+        const queryParams = Array.isArray(route?.request?.queryParams)
+          ? route.request.queryParams
+            .slice(0, 5)
+            .map((param) => ({
+              name: String(param?.name || "q"),
+              value: "sample",
+            }))
+          : [];
+
+        const response = await window.dockium?.project?.testRoute?.({
+          route,
+          authToken: "",
+          headers: authHeaders,
+          pathParams,
+          queryParams,
+          body: null,
+          method: route.method,
+        });
+
+        const statusCode = Number(response?.result?.liveResponse?.statusCode || 0);
+        tested += 1;
+        const ok = Boolean(response?.ok && statusCode > 0 && statusCode < 400);
+        if (ok) {
+          passed += 1;
+        } else {
+          failed += 1;
+          if (failedSamples.length < 4) {
+            failedSamples.push(`${route?.method || "GET"} ${route?.path || "/"} -> ${statusCode || 0}`);
+          }
+        }
+      }
+
+      workflow.postAuthSweep = {
+        attempted: tested > 0,
+        tested,
+        passed,
+        failed,
+        pageRoutes,
+        apiRoutes,
+        detail: failedSamples.length > 0
+          ? `Sample failures: ${failedSamples.join(" | ")}`
+          : "All checked routes accepted authenticated session.",
+      };
+
+      results.push({
+        routeId: "post-auth-sweep",
+        kind: "post-auth-sweep",
+        method: "GET/HEAD",
+        path: `${tested} routes`,
+        statusCode: failed > 0 ? 207 : 200,
+        ok: failed === 0,
+        error: failed > 0 ? `${failed}/${tested} routes failed` : "",
+        credentialSource: loginArtifact.cookie ? "session-cookie" : "bearer-token",
+        payloadKeys: [],
+        triedStatuses: [passed, failed],
+        responsePreview: workflow.postAuthSweep.detail,
+      });
+    }
+
+    const nextState = {
+      authRouteChecks: {
+        loading: false,
+        error: "",
+        lastRunAt: new Date().toISOString(),
+        results,
+        workflow,
+      },
+    };
+
+    if (persistedAuthArtifact) {
+      nextState.appliedToken = persistedAuthArtifact;
+      nextState.tokenInput = persistedAuthArtifact;
+    }
+
+    set(nextState);
   },
 }));

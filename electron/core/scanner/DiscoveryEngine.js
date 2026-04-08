@@ -117,7 +117,8 @@ class DiscoveryEngine {
       {
         headers: options.headers || {},
         body: options.body,
-        params: options.params || [],
+        pathParams: options.pathParams || options.params || [],
+        queryParams: options.queryParams || [],
         method: options.method || route?.method,
       }
     )

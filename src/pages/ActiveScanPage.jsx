@@ -114,7 +114,7 @@ export default function ActiveScanPage() {
         <div className="scanner-left-col">
           <article className="scanner-box">
             <header className="scanner-box-head">
-              <span>Nuclei Active Scan</span>
+              <span>Artemis Active Scan</span>
               <span>{status.active ? "RUNNING" : "READY"}</span>
             </header>
             <div className="scanner-box-body scanner-control-body">
@@ -128,7 +128,7 @@ export default function ActiveScanPage() {
               </label>
 
               <button className="scanner-start-btn" onClick={() => startScan(false)} disabled={loading || status.active || !hasProjectContext}>
-                {loading ? "Starting..." : "Start Nuclei Scan"}
+                {loading ? "Starting..." : "Start Artemis Scan"}
               </button>
 
               <button className="scanner-start-btn" onClick={() => startScan(true)} disabled={loading || status.active || !hasProjectContext}>
@@ -176,7 +176,7 @@ export default function ActiveScanPage() {
                 <strong>{scannerPreflight?.recreated ? "auto-recreated" : "not-needed"}</strong>
               </div>
               <div className="scanner-line">
-                <span>Template Source</span>
+                <span>Engine Source</span>
                 <strong>{templateSetup?.source || "--"}</strong>
               </div>
               <div className="scanner-line">
@@ -214,10 +214,10 @@ export default function ActiveScanPage() {
               <article className="scanner-finding-card">
                 <header className="scanner-finding-head">
                   <span className="scanner-severity scanner-severity-info">diag</span>
-                  <h3>Nuclei Candidate Diagnostics</h3>
+                  <h3>Artemis Candidate Diagnostics</h3>
                 </header>
                 <div className="scanner-finding-preview">
-                  <p>Template setup: {templateSetup?.source || "unknown"}</p>
+                  <p>Engine setup: {templateSetup?.source || "unknown"}</p>
                   <p>
                     Warnings: {Array.isArray(templateSetup?.warnings) ? templateSetup.warnings.length : 0}
                   </p>

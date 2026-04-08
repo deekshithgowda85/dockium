@@ -3,6 +3,52 @@ import path from 'path'
 
 const IGNORED = new Set(['node_modules', '.git', '.next', '__pycache__', 'dist', 'build', '.venv', 'venv'])
 const MANIFEST_NAMES = new Set(['package.json', 'pyproject.toml', 'go.mod'])
+const CODE_EXTENSIONS = new Set([
+  '.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs',
+  '.py', '.java', '.kt', '.rb', '.php', '.go', '.rs', '.cs',
+  '.html', '.css', '.scss', '.sass', '.less', '.vue', '.svelte',
+  '.sql', '.graphql', '.gql',
+  '.md', '.txt',
+  '.yml', '.yaml', '.toml', '.ini', '.env', '.sh', '.ps1', '.bat',
+])
+
+const IMPORTANT_JSON_FILES = new Set([
+  'package.json',
+  'tsconfig.json',
+  'jsconfig.json',
+  'eslint.config.json',
+  '.eslintrc.json',
+  '.prettierrc',
+  '.prettierrc.json',
+  'launch.json',
+  'tasks.json',
+  'extensions.json',
+  'settings.json',
+])
+
+function shouldIncludeFile(filePath) {
+  const normalized = String(filePath || '').split(path.sep).join('/')
+  const name = path.basename(normalized).toLowerCase()
+  const ext = path.extname(name).toLowerCase()
+
+  if (IMPORTANT_JSON_FILES.has(name)) {
+    return true
+  }
+
+  if (name === 'composer.lock' || name === 'package-lock.json' || name === 'pnpm-lock.yaml' || name === 'yarn.lock') {
+    return false
+  }
+
+  if (ext === '.json') {
+    return false
+  }
+
+  if (CODE_EXTENSIONS.has(ext)) {
+    return true
+  }
+
+  return MANIFEST_NAMES.has(name)
+}
 
 function annotationFor(filePath) {
   const lower = filePath.toLowerCase()
@@ -126,12 +172,21 @@ class FolderTreeBuilder {
 
       if (entry.isDirectory()) {
         const childDir = await this.walk(base, abs, routeCountByFile, packageGroups)
+        if ((childDir.children || []).length === 0 && Number(childDir.routeCount || 0) === 0) {
+          continue
+        }
         node.routeCount += Number(childDir.routeCount || 0)
         node.children.push(childDir)
         continue
       }
 
       const routeCount = Number(routeCountByFile.get(childRel) || 0)
+
+      if (!shouldIncludeFile(childRel)) {
+        node.routeCount += routeCount
+        continue
+      }
+
       node.routeCount += routeCount
       node.children.push({
         name: entry.name,

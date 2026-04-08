@@ -1,4 +1,8 @@
 import React from "react";
+import { useMapStore } from "../store/mapStore";
+import { useNucleiStore } from "../store/nucleiStore";
+import { useScanStore } from "../store/scanStore";
+import { useFleetStore } from "../store/fleetStore";
 
 const severityOrder = {
   critical: 0,
@@ -13,9 +17,15 @@ const initialSections = {
   appMap: true,
   findings: true,
   operations: true,
+  screenshots: true,
   owasp: true,
   remediation: true,
 };
+
+function isScreenshotUrl(value) {
+  const text = String(value || "").trim();
+  return text.startsWith("data:image/") || /^https?:\/\//i.test(text);
+}
 
 function flattenFolderLines(node, depth = 0) {
   if (!node || typeof node !== "object") {
@@ -146,10 +156,100 @@ function buildMarkdownReport(payload) {
   payload.remediation.forEach((item) => lines.push(`- [${item.done ? "x" : " "}] ${item.text}`));
   lines.push("");
 
+  lines.push("## Browser Screenshots");
+  if (Array.isArray(payload.screenshots) && payload.screenshots.length > 0) {
+    payload.screenshots.forEach((item) => {
+      lines.push(`- ${item.role} (${item.status})`);
+      lines.push(`  - URL: ${item.url || "n/a"}`);
+      lines.push(`  - Context: ${item.context || "--"}`);
+    });
+  } else {
+    lines.push("- No screenshots available");
+  }
+  lines.push("");
+
   return lines.join("\n");
 }
 
+function buildLocalFallbackContext(projectInfo, folderTree, routes, scanFindings, nucleiStatus, nucleiFindings) {
+  const findings = [
+    ...(Array.isArray(scanFindings) ? scanFindings : []),
+    ...(Array.isArray(nucleiFindings) ? nucleiFindings : []),
+  ].map(normalizeFinding);
+
+  return {
+    generatedAt: new Date().toISOString(),
+    project: {
+      name: String(projectInfo?.name || "local-context"),
+      framework: String(projectInfo?.framework || ""),
+      targetUrl: String(projectInfo?.targetUrl || ""),
+      projectPath: String(projectInfo?.projectPath || ""),
+    },
+    appMap: {
+      routeCount: Array.isArray(routes) ? routes.length : 0,
+      folderTree: folderTree || null,
+      routes: Array.isArray(routes) ? routes : [],
+      warnings: [],
+      openApiSummary: "",
+    },
+    scan: {
+      mode: "local",
+      durationMs: 0,
+      completedAt: String(nucleiStatus?.completedAt || ""),
+      findingsCount: findings.length,
+      summary: summarizeSeverity(findings),
+    },
+    artemis: {
+      status: nucleiStatus || null,
+      findingsCount: Array.isArray(nucleiFindings) ? nucleiFindings.length : 0,
+      findings: Array.isArray(nucleiFindings) ? nucleiFindings : [],
+      checksRun: 0,
+      endpointCount: 0,
+    },
+    browserUse: {
+      coverage: {
+        inputRoutes: 0,
+        uniqueRoutes: 0,
+        duplicatesSkipped: 0,
+        uiPagesTested: 0,
+        apiRoutesTested: 0,
+        authRoutesTested: 0,
+      },
+      documentation: null,
+      llmHelpProbe: null,
+      instances: [],
+    },
+    nuclei: {
+      status: nucleiStatus || null,
+      findingsCount: Array.isArray(nucleiFindings) ? nucleiFindings.length : 0,
+      findings: Array.isArray(nucleiFindings) ? nucleiFindings : [],
+    },
+    proxy: {
+      status: { running: false },
+      requestCount: 0,
+      recentRequests: [],
+    },
+    git: {
+      gateRules: {},
+      pushHistory: [],
+    },
+    docker: {
+      containers: [],
+    },
+    findings,
+    summary: summarizeSeverity(findings),
+    latestReport: null,
+  };
+}
+
 export default function Report() {
+  const mapFolderTree = useMapStore((state) => state.folderTree);
+  const mapRoutes = useMapStore((state) => state.routes);
+  const scanFindings = useScanStore((state) => state.findings);
+  const nucleiStatus = useNucleiStore((state) => state.status);
+  const nucleiFindings = useNucleiStore((state) => state.findings);
+  const fleetSessions = useFleetStore((state) => state.sessions);
+
   const [sections, setSections] = React.useState(initialSections);
   const [loading, setLoading] = React.useState(true);
   const [loadError, setLoadError] = React.useState("");
@@ -157,25 +257,81 @@ export default function Report() {
   const [aiSummary, setAiSummary] = React.useState("");
   const [aiStatus, setAiStatus] = React.useState("AI summary idle");
   const [exportStatus, setExportStatus] = React.useState("Ready");
+  const [projectInfo, setProjectInfo] = React.useState(null);
+  const [llmEnabled, setLlmEnabled] = React.useState(false);
+  const autoSummaryStartedRef = React.useRef(false);
+
+  React.useEffect(() => {
+    let mounted = true;
+    const hydrateProject = async () => {
+      const response = await window.dockium?.project?.getInfo?.();
+      if (!mounted) {
+        return;
+      }
+      setProjectInfo(response?.ok ? response.projectInfo || null : null);
+    };
+    hydrateProject();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  React.useEffect(() => {
+    let mounted = true;
+    const hydrateSettings = async () => {
+      const settings = await window.dockium?.settingsGetAll?.();
+      if (!mounted) {
+        return;
+      }
+      setLlmEnabled(settings?.reportLlmEnabled === true);
+    };
+    hydrateSettings();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const localFallbackContext = React.useMemo(
+    () => buildLocalFallbackContext(projectInfo, mapFolderTree, mapRoutes, scanFindings, nucleiStatus, nucleiFindings),
+    [mapFolderTree, mapRoutes, nucleiFindings, nucleiStatus, projectInfo, scanFindings],
+  );
 
   const refreshContext = React.useCallback(async () => {
     setLoading(true);
     setLoadError("");
+
+    const getContextApi = window.dockium?.report?.getContext;
+    if (typeof getContextApi !== "function") {
+      setContext(localFallbackContext);
+      setLoading(false);
+      return;
+    }
+
     try {
-      const response = await window.dockium?.report?.getContext?.();
-      if (!response?.ok) {
-        setLoadError(String(response?.error || "Failed to load report context"));
-        setContext(null);
-      } else {
+      const response = await getContextApi();
+      if (response?.ok && response.context) {
         setContext(response.context || null);
+      } else {
+        const latest = await window.dockium?.report?.getLatest?.();
+        if (latest?.ok && latest?.report) {
+          setContext({
+            ...localFallbackContext,
+            latestReport: latest.report,
+            findings: Array.isArray(latest.report.findings)
+              ? latest.report.findings.map(normalizeFinding)
+              : localFallbackContext.findings,
+          });
+        } else {
+          setContext(localFallbackContext);
+        }
       }
     } catch (error) {
-      setLoadError(String(error?.message || "Failed to load report context"));
-      setContext(null);
+      setContext(localFallbackContext);
+      setLoadError("");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [localFallbackContext]);
 
   React.useEffect(() => {
     refreshContext();
@@ -212,9 +368,75 @@ export default function Report() {
 
   const summary = React.useMemo(() => summarizeSeverity(sortedFindings), [sortedFindings]);
 
+  const browserUseCoverage = React.useMemo(() => {
+    const reportOps = context?.latestReport?.operations?.browserUse;
+    const contextCoverage = context?.browserUse?.coverage;
+    const coverage = contextCoverage || reportOps || {};
+
+    return {
+      uniqueRoutes: Number(coverage?.uniqueRoutes || 0),
+      uiPagesTested: Number(coverage?.uiPagesTested || 0),
+      apiRoutesTested: Number(coverage?.apiRoutesTested || 0),
+      authRoutesTested: Number(coverage?.authRoutesTested || 0),
+      isolatedInstanceCount: Number(coverage?.isolatedInstanceCount || coverage?.instances?.length || 0),
+      llmHelpProbe: context?.browserUse?.llmHelpProbe || reportOps?.llmHelpProbe || null,
+      documentation: context?.browserUse?.documentation || reportOps?.documentation || null,
+    };
+  }, [
+    context?.browserUse?.coverage,
+    context?.browserUse?.documentation,
+    context?.browserUse?.llmHelpProbe,
+    context?.latestReport?.operations?.browserUse,
+  ]);
+
+  const scannerAiProbe = React.useMemo(
+    () => context?.scan?.operations?.aiProbe || context?.latestReport?.operations?.aiProbe || null,
+    [context?.latestReport?.operations?.aiProbe, context?.scan?.operations?.aiProbe],
+  );
+
+  const proxyOps = React.useMemo(() => {
+    const proxy = context?.proxy || {};
+    const status = proxy?.status || {};
+    const summary = proxy?.summary || {};
+    const recentRequests = Array.isArray(proxy?.recentRequests) ? proxy.recentRequests : [];
+
+    return {
+      running: Boolean(status?.running),
+      port: Number(status?.port || 8080),
+      requestCount: Number(proxy?.requestCount || status?.requestCount || recentRequests.length || 0),
+      summary,
+      recentRequests,
+    };
+  }, [context?.proxy]);
+
+  const proxyEvidencePreview = React.useMemo(
+    () => proxyOps.recentRequests
+      .slice(-16)
+      .reverse()
+      .map((entry) => ({
+        id: Number(entry?.id || 0),
+        method: String(entry?.method || "GET").toUpperCase(),
+        path: String(entry?.path || "/"),
+        status: Number(entry?.status || entry?.responseStatus || 0),
+        flag: String(entry?.flag || "normal"),
+        requestRaw: String(entry?.requestRaw || entry?.requestBody || ""),
+        responseRaw: String(entry?.responseRaw || entry?.responseBody || ""),
+      })),
+    [proxyOps.recentRequests],
+  );
+
   const summaryText = React.useMemo(
-    () => `Total findings: ${summary.total} (${summary.critical} critical, ${summary.high} high, ${summary.medium} medium, ${summary.low} low, ${summary.info} info). App routes mapped: ${routeLines.length}. Proxy requests captured: ${Number(context?.proxy?.requestCount || 0)}.`,
-    [context?.proxy?.requestCount, routeLines.length, summary],
+    () => `Total findings: ${summary.total} (${summary.critical} critical, ${summary.high} high, ${summary.medium} medium, ${summary.low} low, ${summary.info} info). App routes mapped: ${routeLines.length}. Browser-use tested ${browserUseCoverage.uniqueRoutes} unique routes across ${browserUseCoverage.isolatedInstanceCount} isolated instances (pages ${browserUseCoverage.uiPagesTested}, api ${browserUseCoverage.apiRoutesTested}, auth ${browserUseCoverage.authRoutesTested}). Proxy requests captured: ${Number(context?.proxy?.requestCount || 0)}.`,
+    [
+      browserUseCoverage.apiRoutesTested,
+      browserUseCoverage.authRoutesTested,
+      browserUseCoverage.isolatedInstanceCount,
+      browserUseCoverage.uiPagesTested,
+      browserUseCoverage.uniqueRoutes,
+      context?.proxy?.requestCount,
+      routeLines.length,
+      summary,
+    ],
   );
 
   const owaspChecklist = React.useMemo(() => {
@@ -231,6 +453,20 @@ export default function Report() {
     return buildRemediation(sortedFindings);
   }, [context?.latestReport?.remediationChecklist, sortedFindings]);
 
+  const reportScreenshots = React.useMemo(
+    () => (Array.isArray(fleetSessions) ? fleetSessions : [])
+      .filter((session) => isScreenshotUrl(session?.previewUrl))
+      .slice(0, 12)
+      .map((session) => ({
+        id: String(session?.id || session?.role || Math.random()),
+        role: String(session?.role || session?.id || "SESSION"),
+        status: String(session?.status || "--"),
+        context: String(session?.current || session?.last || "--"),
+        url: String(session?.previewUrl || ""),
+      })),
+    [fleetSessions],
+  );
+
   const exportPayload = React.useMemo(
     () => ({
       projectName,
@@ -245,27 +481,37 @@ export default function Report() {
         routes: routeLines,
       },
       modules: {
-        nuclei: {
-          findingsCount: Number(context?.nuclei?.findingsCount || 0),
-          status: context?.nuclei?.status || null,
+        artemis: {
+          findingsCount: Number(context?.artemis?.findingsCount || context?.nuclei?.findingsCount || 0),
+          status: context?.artemis?.status || context?.nuclei?.status || null,
+          checksRun: Number(context?.artemis?.checksRun || 0),
+          endpointCount: Number(context?.artemis?.endpointCount || 0),
         },
+        browserUse: browserUseCoverage,
         proxy: context?.proxy || null,
         git: context?.git || null,
         docker: context?.docker || null,
       },
+      screenshots: reportScreenshots,
       aiSummary,
     }),
     [
       aiSummary,
       context?.docker,
       context?.git,
+      context?.artemis?.checksRun,
+      context?.artemis?.endpointCount,
+      context?.artemis?.findingsCount,
+      context?.artemis?.status,
       context?.nuclei?.findingsCount,
       context?.nuclei?.status,
       context?.proxy,
+      browserUseCoverage,
       durationText,
       folderLines,
       owaspChecklist,
       projectName,
+      reportScreenshots,
       remediationChecklist,
       routeLines,
       scanStarted,
@@ -279,22 +525,29 @@ export default function Report() {
   };
 
   const handleExport = async (format) => {
-    const exportApi = window.dockium?.exportReport;
-    if (!exportApi) {
+    const reportApi = window.dockium?.report;
+    if (!reportApi) {
       setExportStatus("Export failed: desktop IPC bridge unavailable");
       return;
     }
 
     setExportStatus(`Exporting ${format.toUpperCase()}...`);
 
-    const content =
-      format === "markdown"
-        ? buildMarkdownReport(exportPayload)
-        : format === "json"
-          ? JSON.stringify(exportPayload, null, 2)
-          : "";
+    let result = null;
+    if (format === "pdf") {
+      result = await reportApi.exportPdf?.();
+    } else if (format === "markdown") {
+      result = await reportApi.exportMarkdown?.({
+        content: buildMarkdownReport(exportPayload),
+      });
+    } else if (format === "json") {
+      result = await reportApi.exportJson?.({
+        content: JSON.stringify(exportPayload, null, 2),
+      });
+    } else {
+      result = { ok: false, error: `Unsupported export format: ${format}` };
+    }
 
-    const result = await exportApi({ format, content });
     if (result?.ok) {
       setExportStatus(`Exported to ${result.filePath}`);
       return;
@@ -308,7 +561,7 @@ export default function Report() {
     setExportStatus(`Export failed: ${result?.error ?? "Unknown error"}`);
   };
 
-  const generateAiSummary = async () => {
+  const generateAiSummary = React.useCallback(async () => {
     if (!window.dockium?.report?.generateSummary) {
       setAiStatus("AI summary unavailable: IPC bridge missing");
       return;
@@ -323,7 +576,28 @@ export default function Report() {
 
     setAiSummary(String(result.summary || ""));
     setAiStatus(`AI summary generated (${result?.meta?.model || "model"})`);
-  };
+  }, []);
+
+  React.useEffect(() => {
+    if (loading || autoSummaryStartedRef.current) {
+      return;
+    }
+
+    if (!context || sortedFindings.length === 0) {
+      autoSummaryStartedRef.current = true;
+      return;
+    }
+
+    if (!llmEnabled) {
+      autoSummaryStartedRef.current = true;
+      return;
+    }
+
+    autoSummaryStartedRef.current = true;
+    generateAiSummary().catch((error) => {
+      setAiStatus(`AI summary failed: ${String(error?.message || "Unknown error")}`);
+    });
+  }, [context, generateAiSummary, llmEnabled, loading, sortedFindings.length]);
 
   if (loading) {
     return <section className="report-view"><div className="report-status">Loading report context...</div></section>;
@@ -403,14 +677,82 @@ export default function Report() {
         <Section id="operations" title="OPERATIONS SNAPSHOT" isOpen={sections.operations} onToggle={toggleSection}>
           <div className="report-map-grid">
             <div className="report-map-block">
-              <h4>Nuclei</h4>
-              <pre>{JSON.stringify(context?.nuclei?.status || {}, null, 2)}</pre>
+              <h4>Artemis Active Scanner</h4>
+              <pre>{JSON.stringify(context?.artemis || context?.nuclei || {}, null, 2)}</pre>
+            </div>
+            <div className="report-map-block">
+              <h4>Browser UI/Route Testing</h4>
+              <pre>{JSON.stringify(browserUseCoverage, null, 2)}</pre>
+            </div>
+            <div className="report-map-block">
+              <h4>Scanner AI Probe</h4>
+              <pre>{JSON.stringify(scannerAiProbe || {}, null, 2)}</pre>
             </div>
             <div className="report-map-block">
               <h4>Proxy/Git/Docker</h4>
               <pre>{JSON.stringify({ proxy: context?.proxy, git: context?.git, docker: context?.docker }, null, 2)}</pre>
             </div>
           </div>
+          <div className="report-map-grid">
+            <div className="report-map-block">
+              <h4>Proxy Traffic Summary</h4>
+              <pre>{JSON.stringify({
+                running: proxyOps.running,
+                port: proxyOps.port,
+                requestCount: proxyOps.requestCount,
+                summary: proxyOps.summary,
+              }, null, 2)}</pre>
+            </div>
+          </div>
+          <div className="report-proxy-evidence-list">
+            {proxyEvidencePreview.length === 0 ? (
+              <div className="scanner-empty">No proxy request/response evidence captured yet.</div>
+            ) : (
+              proxyEvidencePreview.map((entry) => (
+                <article key={`${entry.id}-${entry.method}-${entry.path}`} className="report-proxy-evidence-card">
+                  <header className="report-proxy-evidence-head">
+                    <strong>{entry.method} {entry.path}</strong>
+                    <span>[{entry.status}] {entry.flag}</span>
+                  </header>
+                  <div className="report-map-grid">
+                    <div className="report-map-block">
+                      <h4>Request</h4>
+                      <pre>{entry.requestRaw || "n/a"}</pre>
+                    </div>
+                    <div className="report-map-block">
+                      <h4>Response</h4>
+                      <pre>{entry.responseRaw || "n/a"}</pre>
+                    </div>
+                  </div>
+                </article>
+              ))
+            )}
+          </div>
+          <div className="report-map-grid">
+            <div className="report-map-block">
+              <h4>Browser Test Documentation</h4>
+              <pre>{JSON.stringify(browserUseCoverage.documentation || {}, null, 2)}</pre>
+            </div>
+          </div>
+        </Section>
+
+        <Section id="screenshots" title="BROWSER SCREENSHOTS" isOpen={sections.screenshots} onToggle={toggleSection}>
+          {reportScreenshots.length === 0 ? (
+            <div className="scanner-empty">No screenshots available yet. Start Chromium Fleet and run scan/login flows to collect evidence frames.</div>
+          ) : (
+            <div className="report-screenshot-grid">
+              {reportScreenshots.map((shot) => (
+                <article key={shot.id} className="report-screenshot-card">
+                  <header className="report-screenshot-head">
+                    <strong>{shot.role}</strong>
+                    <span>{shot.status}</span>
+                  </header>
+                  <img className="report-screenshot-image" src={shot.url} alt={`${shot.role} screenshot`} loading="lazy" />
+                  <p className="report-screenshot-context">{shot.context}</p>
+                </article>
+              ))}
+            </div>
+          )}
         </Section>
 
         <Section id="owasp" title="OWASP TOP 10 CHECKLIST" isOpen={sections.owasp} onToggle={toggleSection}>

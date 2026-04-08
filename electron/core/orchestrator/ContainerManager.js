@@ -4,7 +4,7 @@ import NetworkManager from './NetworkManager.js'
 import HealthMonitor from './HealthMonitor.js'
 
 const docker = new Docker()
-const DEFAULT_CONTAINER_NAMES = ['dockium-scanner', 'dockium-proxy', 'dockium-app']
+const DEFAULT_CONTAINER_NAMES = ['dockium-proxy', 'dockium-app']
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -56,7 +56,7 @@ class ContainerManager {
   }
 
   buildContainerNames(config) {
-    const names = ['dockium-scanner', 'dockium-proxy']
+    const names = ['dockium-proxy']
     if (this.shouldStartAppContainer(config)) {
       names.push('dockium-app')
     }
@@ -72,7 +72,6 @@ class ContainerManager {
       this.containerNames = this.buildContainerNames(config)
       this.networkName = await this.networkManager.createNetwork('dockium-net')
 
-      await this.startScanner(config)
       if (this.shouldUseDbContainer(config)) {
         await this.startDb(config)
       }
@@ -268,122 +267,6 @@ DOCKIUM_PROXY=http://localhost:8080
       await this.waitForPort(config?.project?.appPort || 3000, 'App', 60, 2000)
       config?.wss?.emitLog(`Imported app container is running (${imageRef}) on localhost:${config?.project?.appPort || 3000}`)
     })
-  }
-
-  async startScanner(config) {
-    return this.withOperationLock('container:dockium-scanner', async () => {
-      console.log('Starting scanner container...')
-      await this.ensureImage('node:18-alpine', { wss: config?.wss, label: 'scanner' })
-      try {
-        await docker.getImage('node:18-alpine').tag({ repo: 'dockium/scanner', tag: 'latest' })
-      } catch {}
-      await this.removeIfExists('dockium-scanner')
-
-      const appPort = config?.project?.appPort || 3000
-      const configuredTarget = String(config?.project?.targetUrl || '').trim()
-      const targetUrl = configuredTarget.includes('localhost') || configuredTarget.includes('127.0.0.1')
-        ? `http://dockium-app:${appPort}`
-        : (configuredTarget || `http://dockium-app:${appPort}`)
-
-      const c = await docker.createContainer({
-        Image: 'dockium/scanner:latest',
-        name: 'dockium-scanner',
-        Cmd: ['node', '-e', 'setInterval(()=>{},1000)'],
-        Env: [
-          `DOCKIUM_TARGET=${targetUrl}`,
-        ],
-        HostConfig: {
-          NetworkMode: this.networkName,
-        }
-      })
-
-      await c.start()
-    })
-  }
-
-  async checkScannerHealth() {
-    try {
-      const container = docker.getContainer('dockium-scanner')
-      const info = await container.inspect()
-      if (!info?.State?.Running) {
-        return {
-          healthy: false,
-          reason: `scanner container state is ${info?.State?.Status || 'unknown'}`,
-          status: String(info?.State?.Status || 'unknown'),
-        }
-      }
-
-      await this.execInContainer('dockium-scanner', ['node', '-e', 'process.exit(0)'])
-      return {
-        healthy: true,
-        reason: 'scanner exec preflight passed',
-        status: String(info?.State?.Status || 'running'),
-      }
-    } catch (error) {
-      return {
-        healthy: false,
-        reason: String(error?.message || 'scanner health check failed'),
-        status: 'unknown',
-      }
-    }
-  }
-
-  async ensureScannerRunning(config, options = {}) {
-    this.healthMonitor.wss = config?.wss || this.healthMonitor.wss
-    await this.ensureNetwork()
-
-    const forceRecreate = Boolean(options?.forceRecreate)
-    const outcome = {
-      created: false,
-      recreated: false,
-      healthy: false,
-      reason: '',
-      status: 'unknown',
-    }
-
-    if (forceRecreate) {
-      await this.removeIfExists('dockium-scanner')
-      await this.startScanner(config)
-      const health = await this.checkScannerHealth()
-      outcome.created = true
-      outcome.recreated = true
-      outcome.healthy = health.healthy
-      outcome.reason = health.reason
-      outcome.status = health.status
-      return outcome
-    }
-
-    try {
-      const container = docker.getContainer('dockium-scanner')
-      const info = await container.inspect()
-      if (info?.State?.Running) {
-        const health = await this.checkScannerHealth()
-        if (health.healthy) {
-          outcome.healthy = true
-          outcome.reason = health.reason
-          outcome.status = health.status
-          return outcome
-        }
-
-        await this.removeIfExists('dockium-scanner')
-        outcome.recreated = true
-        outcome.reason = `recreated unhealthy scanner: ${health.reason}`
-      }
-    } catch {
-      // Continue to start a fresh container when it does not exist.
-      outcome.reason = 'scanner container missing; creating a new one'
-    }
-
-    await this.startScanner(config)
-    const health = await this.checkScannerHealth()
-    outcome.created = true
-    outcome.healthy = health.healthy
-    outcome.status = health.status
-    if (!outcome.reason) {
-      outcome.reason = health.reason
-    }
-
-    return outcome
   }
 
   async ensureAppRunning(config) {

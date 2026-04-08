@@ -64,6 +64,10 @@ function registerProjectIpc(ipcMain, deps) {
     return { ok: true, projectInfo: getProjectInfo() };
   });
 
+  ipcMain.handle("project:getConfig", async () => {
+    return { ok: true, config: getProjectConfig?.() || null };
+  });
+
   ipcMain.handle("project:openImportedImage", async (_event, payload = {}) => {
     if (!payload.image) {
       return fail("Missing imported image", 400, "image is required");
@@ -188,14 +192,18 @@ function registerProjectIpc(ipcMain, deps) {
       }
     }
 
-    const params = Array.isArray(payload?.params) ? payload.params : [];
+    const pathParams = Array.isArray(payload?.pathParams)
+      ? payload.pathParams
+      : (Array.isArray(payload?.params) ? payload.params : []);
+    const queryParams = Array.isArray(payload?.queryParams) ? payload.queryParams : [];
     const body = payload?.body;
     const method = String(payload?.method || payload?.route?.method || "GET").toUpperCase();
 
     const response = await testRoute(payload.route, {
       authHeaders,
       headers: extraHeaders,
-      params,
+      pathParams,
+      queryParams,
       body,
       method,
     });

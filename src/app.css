@@ -456,6 +456,15 @@ body.is-resizing-sidebar * {
   background: var(--bg-hover);
 }
 
+.proxy-export-note {
+  color: #1f4d2a;
+  font-size: 11px;
+}
+
+.proxy-export-note.error {
+  color: #7b1f1f;
+}
+
 .proxy-filter {
   min-height: 28px;
   display: inline-flex;
@@ -567,6 +576,17 @@ body.is-resizing-sidebar * {
   padding: 18px 8px;
 }
 
+.proxy-format-chip {
+  min-height: 18px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  background: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
 .proxy-flag-suspicious {
   color: #6d5200;
 }
@@ -630,6 +650,17 @@ body.is-resizing-sidebar * {
   font-family: var(--font-mono);
   background: #ffffff;
   color: #111111;
+}
+
+.proxy-request-meta {
+  min-height: 24px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--text-secondary);
 }
 
 .proxy-response-view {
@@ -1908,6 +1939,16 @@ webview {
   align-content: start;
 }
 
+.settings-v2-note {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  background: #fbfcff;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .settings-v2-row {
   min-height: 32px;
   display: grid;
@@ -2390,6 +2431,28 @@ webview {
   gap: 8px;
 }
 
+.report-proxy-evidence-list {
+  display: grid;
+  gap: 8px;
+}
+
+.report-proxy-evidence-card {
+  border: 1px solid var(--border);
+  background: #fbfcff;
+  padding: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.report-proxy-evidence-head {
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
 .report-finding-block {
   border: 1px solid var(--border);
   background: #fbfcff;
@@ -2404,6 +2467,45 @@ webview {
   gap: 8px;
   font-size: 12px;
   font-weight: 700;
+}
+
+.report-screenshot-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.report-screenshot-card {
+  border: 1px solid var(--border);
+  background: #fbfcff;
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+}
+
+.report-screenshot-head {
+  min-height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.report-screenshot-image {
+  width: 100%;
+  max-height: 180px;
+  border: 1px solid var(--border);
+  object-fit: cover;
+  background: #ffffff;
+}
+
+.report-screenshot-context {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .report-severity {
@@ -3852,8 +3954,10 @@ webview {
 }
 
 .appmap-v2-body {
+  display: grid;
   min-height: 0;
   padding: 10px;
+  overflow: hidden;
 }
 
 .appmap-v2-tabpanel {
@@ -3861,10 +3965,22 @@ webview {
   height: 100%;
   border: 1px solid #c8c8c8;
   background: #ffffff;
-  padding: 10px;
-  display: grid;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
+  overflow: hidden;
+}
+
+.appmap-routes-scroll {
+  min-height: 0;
+  flex: 1 1 auto;
+  height: auto;
+  overflow: auto;
+  display: grid;
   align-content: start;
+  gap: 8px;
+  padding-right: 2px;
 }
 
 .appmap-v2-tabpanel h3 {
@@ -3889,6 +4005,8 @@ webview {
   color: #555555;
   font-size: 11px;
   font-family: var(--font-mono);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .appmap-openapi-debug {
@@ -4025,6 +4143,61 @@ webview {
   gap: 2px;
 }
 
+.appmap-flow-node-wrap {
+  display: grid;
+  gap: 4px;
+  position: relative;
+}
+
+.appmap-flow-node-wrap::before {
+  content: "";
+  position: absolute;
+  top: -6px;
+  bottom: 0;
+  left: -10px;
+  width: 1px;
+  background: #d4d8e0;
+}
+
+.appmap-flow-node {
+  min-height: 28px;
+  border: 1px solid #c9cfdb;
+  background: #f7f9fd;
+  border-radius: 6px;
+  padding: 4px 8px;
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.appmap-flow-segment {
+  color: #0f1f3a;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.appmap-flow-count,
+.appmap-flow-auth,
+.appmap-flow-methods {
+  min-height: 18px;
+  border-radius: 999px;
+  border: 1px solid #c9cfd8;
+  background: #ffffff;
+  color: #2c3445;
+  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  font-family: var(--font-mono);
+}
+
+.appmap-flow-auth {
+  border-color: #98a7c5;
+  color: #233760;
+}
+
 .appmap-page-node {
   min-height: 24px;
   display: inline-flex;
@@ -4056,8 +4229,8 @@ webview {
 
 .appmap-route-group {
   display: grid;
-  gap: 8px;
-  margin-bottom: 10px;
+  gap: 6px;
+  margin-bottom: 6px;
 }
 
 .appmap-route-group h4 {
@@ -4082,14 +4255,14 @@ webview {
 .appmap-route-head {
   display: flex;
   justify-content: space-between;
-  gap: 10px;
-  padding: 10px;
+  gap: 8px;
+  padding: 7px 8px;
   border-bottom: 1px solid #e1e1e1;
 }
 
 .appmap-route-main {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
   flex: 1;
   cursor: pointer;
@@ -4098,7 +4271,7 @@ webview {
 .appmap-route-main h3 {
   margin: 0;
   color: #111111;
-  font-size: 15px;
+  font-size: 13px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4106,15 +4279,15 @@ webview {
 }
 
 .appmap-route-main p {
-  margin: 3px 0 0;
+  margin: 2px 0 0;
   color: #444444;
-  font-size: 11px;
+  font-size: 10px;
   font-family: var(--font-mono);
 }
 
 .appmap-method {
   min-width: 54px;
-  min-height: 24px;
+  min-height: 20px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -4140,8 +4313,8 @@ webview {
   color: #333333;
   text-decoration: underline;
   padding: 0;
-  margin-top: 5px;
-  font-size: 11px;
+  margin-top: 3px;
+  font-size: 10px;
   cursor: pointer;
   font-family: var(--font-mono);
 }
@@ -4150,7 +4323,7 @@ webview {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 6px;
+  gap: 4px;
 }
 
 .appmap-auth-badge {
@@ -4196,7 +4369,7 @@ webview {
 }
 
 .appmap-route-expand {
-  padding: 10px;
+  padding: 8px;
 }
 
 .appmap-meta-grid {
@@ -4233,14 +4406,69 @@ webview {
 .appmap-test-panel {
   border-top: 1px solid #e1e1e1;
   background: #ffffff;
-  padding: 10px;
+  padding: 8px;
   display: grid;
+  gap: 6px;
+}
+
+.appmap-auth-test-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.appmap-auth-workflow {
+  border: 1px solid #d0d0d0;
+  background: #ffffff;
+  display: grid;
+}
+
+.appmap-auth-workflow-row {
+  min-height: 24px;
+  padding: 0 8px;
+  display: grid;
+  grid-template-columns: 80px 56px minmax(0, 1fr) 66px;
+  align-items: center;
   gap: 8px;
+  border-bottom: 1px solid #ececec;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: #222222;
+}
+
+.appmap-auth-workflow-artifacts {
+  min-height: 24px;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: #444444;
+}
+
+.appmap-auth-test-results {
+  border: 1px solid #d0d0d0;
+  background: #ffffff;
+  min-height: 0;
+  max-height: 160px;
+  overflow: auto;
+}
+
+.appmap-auth-test-row {
+  min-height: 24px;
+  border-bottom: 1px solid #ececec;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: #222222;
 }
 
 .appmap-test-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -4286,6 +4514,16 @@ webview {
   color: #555555;
   font-family: var(--font-mono);
   font-size: 12px;
+}
+
+@media (max-width: 1180px) {
+  .appmap-test-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .appmap-auth-workflow-row {
+    grid-template-columns: 76px 52px minmax(0, 1fr) 56px;
+  }
 }
 
 @media (max-width: 1100px) {
@@ -4504,6 +4742,10 @@ webview {
     grid-template-columns: 1fr;
   }
 
+  .report-screenshot-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .settings-v2-layout {
     grid-template-columns: 200px 1fr;
   }
@@ -4633,6 +4875,10 @@ webview {
     grid-template-columns: 1fr;
     align-items: start;
     padding: 6px 2px;
+  }
+
+  .report-screenshot-grid {
+    grid-template-columns: 1fr;
   }
 
   .settings-v2-layout {

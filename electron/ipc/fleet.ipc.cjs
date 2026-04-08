@@ -210,9 +210,6 @@ async function ensureFleetRuntimeContainers(runtime) {
   if (runtime.ContainerManager.ensureAppRunning) {
     await runtime.ContainerManager.ensureAppRunning(configWithWs);
   }
-  if (runtime.ContainerManager.ensureScannerRunning) {
-    await runtime.ContainerManager.ensureScannerRunning(configWithWs);
-  }
 }
 
 async function startFleetWithHeadlessFallback(runtime, payload, getWss) {
@@ -237,10 +234,19 @@ async function startFleetWithHeadlessFallback(runtime, payload, getWss) {
 }
 
 function registerFleetIpc(ipcMain, deps) {
-  const { runtime, getWss } = deps;
+  const { runtime, getWss, ensureProxyEngine, getProxyEngine } = deps;
 
   ipcMain.handle("fleet:start", async (_event, payload = {}) => {
     try {
+      if (payload?.useProxy === true) {
+        const existingProxy = typeof getProxyEngine === "function" ? getProxyEngine() : null;
+        const proxyEngine = existingProxy || (typeof ensureProxyEngine === "function" ? ensureProxyEngine({}) : null);
+        if (proxyEngine?.start) {
+          await proxyEngine.start();
+          getWss()?.emitLog("Proxy auto-started for browser fleet run");
+        }
+      }
+
       await ensureFleetRuntimeContainers(runtime);
 
       let result;

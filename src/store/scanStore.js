@@ -1,14 +1,14 @@
 import { create } from "zustand";
 
 const scannerModules = [
+  { id: "browserUse", label: "Browser Use", enabled: true },
   { id: "api", label: "API Scanner", enabled: true },
   { id: "auth", label: "Auth Scanner", enabled: true },
   { id: "fuzzer", label: "Input Fuzzer", enabled: true },
   { id: "infra", label: "Infra Scanner", enabled: true },
   { id: "secrets", label: "Secrets Scan", enabled: true },
   { id: "cve", label: "Dependency CVE", enabled: true },
-  { id: "nuclei", label: "Nuclei Active", enabled: true },
-  { id: "browserUse", label: "Browser Use", enabled: true },
+  { id: "artemis", label: "Artemis Active", enabled: true },
 ];
 
 function nowClock() {
@@ -55,6 +55,45 @@ function summarize(findings) {
   return summary;
 }
 
+function normalizeBrowserUseOps(operations = {}) {
+  const browserUse = operations?.browserUse || {};
+  const documentation = browserUse?.documentation || {};
+  const coverage = documentation?.coverage || browserUse?.coverage || {};
+  const llmHelpProbe = documentation?.llmHelpProbe || browserUse?.llmHelpProbe || null;
+
+  return {
+    coverage: {
+      inputRoutes: Number(coverage?.inputRoutes || 0),
+      uniqueRoutes: Number(coverage?.uniqueRoutes || 0),
+      duplicatesSkipped: Number(coverage?.duplicatesSkipped || 0),
+      uiPagesTested: Number(coverage?.uiPagesTested || 0),
+      apiRoutesTested: Number(coverage?.apiRoutesTested || 0),
+      authRoutesTested: Number(coverage?.authRoutesTested || 0),
+      mappedUiElements: Number(coverage?.mappedUiElements || 0),
+      brokenLinksDetected: Number(coverage?.brokenLinksDetected || 0),
+    },
+    instances: Array.isArray(documentation?.instances)
+      ? documentation.instances
+      : Array.isArray(browserUse?.instances)
+        ? browserUse.instances
+        : [],
+    llmHelpProbe,
+    documentation,
+  };
+}
+
+function normalizeAiProbeFromOperations(operations = {}) {
+  const probe = operations?.aiProbe || {};
+  return {
+    loading: false,
+    lastRunAt: String(probe?.checkedAt || ""),
+    ok: Boolean(probe?.ok),
+    endpoint: String(probe?.endpoint || ""),
+    status: Number(probe?.status || 0),
+    detail: String(probe?.detail || ""),
+  };
+}
+
 export const useScanStore = create((set, get) => ({
   lastScan: {
     started: "-",
@@ -63,6 +102,21 @@ export const useScanStore = create((set, get) => ({
     high: 0,
     medium: 0,
     low: 0,
+    browserUse: {
+      coverage: {
+        inputRoutes: 0,
+        uniqueRoutes: 0,
+        duplicatesSkipped: 0,
+        uiPagesTested: 0,
+        apiRoutesTested: 0,
+        authRoutesTested: 0,
+        mappedUiElements: 0,
+        brokenLinksDetected: 0,
+      },
+      instances: [],
+      llmHelpProbe: null,
+      documentation: null,
+    },
   },
   activityLog: [{ time: nowClock(), message: "Scan subsystem ready" }],
   scanTarget: "localhost:3000",
@@ -75,6 +129,14 @@ export const useScanStore = create((set, get) => ({
   modules: scannerModules,
   isScanRunning: false,
   findings: [],
+  aiProbe: {
+    loading: false,
+    lastRunAt: "",
+    ok: false,
+    endpoint: "",
+    status: 0,
+    detail: "",
+  },
 
   addLog: (message) => {
     set((state) => ({
@@ -126,9 +188,13 @@ export const useScanStore = create((set, get) => ({
     const findingsResult = await window.dockium?.scan?.getFindings?.();
     const findings = (findingsResult?.findings || []).map(normalizeFinding);
     const summary = summarize(findings);
+    const operations = status?.status?.operations || {};
+    const browserUse = normalizeBrowserUseOps(operations);
+    const aiProbe = normalizeAiProbeFromOperations(operations);
 
     set({
       findings,
+      aiProbe,
       isScanRunning: false,
       scanProgress: { phase: "completed", phaseName: "completed", percent: 100 },
       lastScan: {
@@ -140,6 +206,7 @@ export const useScanStore = create((set, get) => ({
         high: summary.high,
         medium: summary.medium,
         low: summary.low,
+        browserUse,
       },
     });
   },
@@ -168,10 +235,14 @@ export const useScanStore = create((set, get) => ({
       const scan = response.scan || {};
       const findings = (scan.findings || []).map(normalizeFinding);
       const summary = scan.summary || summarize(findings);
+      const operations = scan.operations || {};
+      const browserUse = normalizeBrowserUseOps(operations);
+      const aiProbe = normalizeAiProbeFromOperations(operations);
 
       set({
         isScanRunning: false,
         findings,
+        aiProbe,
         scanProgress: { phase: "completed", phaseName: "completed", percent: 100 },
         lastScan: {
           started: new Date(scan.completedAt || Date.now()).toLocaleString(),
@@ -180,6 +251,7 @@ export const useScanStore = create((set, get) => ({
           high: summary.high || 0,
           medium: summary.medium || 0,
           low: summary.low || 0,
+          browserUse,
         },
       });
 
@@ -196,6 +268,35 @@ export const useScanStore = create((set, get) => ({
 
   runQuickScan: async () => {
     await get().runScan("quick");
+  },
+
+  testAiConnection: async () => {
+    set((state) => ({
+      aiProbe: {
+        ...state.aiProbe,
+        loading: true,
+      },
+    }));
+
+    const response = await window.dockium?.scan?.testAiConnection?.();
+    const probe = response?.probe || {};
+
+    set({
+      aiProbe: {
+        loading: false,
+        lastRunAt: new Date().toISOString(),
+        ok: Boolean(response?.ok),
+        endpoint: String(probe.endpoint || ""),
+        status: Number(probe.status || 0),
+        detail: String(probe.detail || response?.error || "No probe response"),
+      },
+    });
+
+    get().addLog(
+      response?.ok
+        ? `AI probe passed (${probe.endpoint || "configured endpoint"})`
+        : `AI probe failed: ${String(probe.detail || response?.error || "unknown")}`
+    );
   },
 
   openInProxy: async () => {

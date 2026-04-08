@@ -45,12 +45,79 @@ function methodClass(method) {
   return `appmap-method appmap-method-${String(method || "GET").toLowerCase()}`;
 }
 
+function isLoginRoute(route) {
+  const method = String(route?.method || "GET").toUpperCase();
+  const pathValue = String(route?.path || route?.fullPath || "").toLowerCase();
+  return method === "POST" && /(login|signin|auth|session|token)/.test(pathValue);
+}
+
+function isRegisterRoute(route) {
+  const method = String(route?.method || "GET").toUpperCase();
+  const pathValue = String(route?.path || route?.fullPath || "").toLowerCase();
+  return method === "POST" && /(register|signup|create[-_]?account|users)/.test(pathValue);
+}
+
+function buildLiveRouteUrl(targetUrl, route) {
+  const base = String(targetUrl || "").trim().replace(/\/$/, "");
+  const routePath = String(route?.path || route?.fullPath || "/").replace(/:([A-Za-z0-9_]+)/g, "1");
+  if (!base) {
+    return "";
+  }
+  return `${base}${routePath.startsWith("/") ? routePath : `/${routePath}`}`;
+}
+
+function detectAuthSurface(routes = [], targetUrl = "") {
+  const base = String(targetUrl || "").trim().replace(/\/$/, "");
+  const apiAuthRoutes = routes.filter((route) => isLoginRoute(route) || isRegisterRoute(route));
+
+  const uiCandidates = routes.filter((route) => {
+    const method = String(route?.method || "GET").toUpperCase();
+    const pathValue = String(route?.path || route?.fullPath || "").toLowerCase();
+    if (method !== "GET") {
+      return false;
+    }
+    if (pathValue.startsWith("/api") || pathValue.startsWith("/rest")) {
+      return false;
+    }
+    return /(login|signin|register|signup)/.test(pathValue);
+  });
+
+  const loginUiRoute = uiCandidates.find((route) => /(login|signin)/.test(String(route?.path || "").toLowerCase()));
+  const registerUiRoute = uiCandidates.find((route) => /(register|signup)/.test(String(route?.path || "").toLowerCase()));
+
+  const apiLoginRoute = apiAuthRoutes.find((route) => isLoginRoute(route));
+  const apiRegisterRoute = apiAuthRoutes.find((route) => isRegisterRoute(route));
+  const routePathForHash = (route, fallback) => {
+    const raw = String(route?.path || fallback || "").trim().toLowerCase();
+    const segments = raw.split("/").filter(Boolean);
+    return segments[segments.length - 1] || fallback;
+  };
+
+  const loginSegment = routePathForHash(apiLoginRoute, "login");
+  const registerSegment = routePathForHash(apiRegisterRoute, "signup");
+  const loginUiUrl = loginUiRoute
+    ? buildLiveRouteUrl(base, loginUiRoute)
+    : (base ? `${base}/#/${loginSegment}` : "");
+  const registerUiUrl = registerUiRoute
+    ? buildLiveRouteUrl(base, registerUiRoute)
+    : (base ? `${base}/#/${registerSegment}` : "");
+
+  return {
+    apiAuthRoutes,
+    loginUiUrl,
+    registerUiUrl,
+    apiLoginPath: String(apiLoginRoute?.path || ""),
+    apiRegisterPath: String(apiRegisterRoute?.path || ""),
+  };
+}
+
 function buildPagesTree(routes = []) {
   const root = {
     id: "root",
     segment: "/",
     children: [],
     routeCount: 0,
+    authRouteCount: 0,
     methods: new Set(),
   };
 
@@ -64,6 +131,9 @@ function buildPagesTree(routes = []) {
 
     if (segments.length === 0) {
       root.routeCount += 1;
+      if (route?.authRequired) {
+        root.authRouteCount += 1;
+      }
       root.methods.add(method);
       return;
     }
@@ -84,6 +154,7 @@ function buildPagesTree(routes = []) {
           segment,
           children: [],
           routeCount: 0,
+          authRouteCount: 0,
           methods: new Set(),
         };
         segmentMap.set(segment, nextNode);
@@ -93,6 +164,9 @@ function buildPagesTree(routes = []) {
 
       nextNode.methods.add(method);
       nextNode.routeCount += 1;
+      if (route?.authRequired) {
+        nextNode.authRouteCount += 1;
+      }
 
       currentNode = nextNode;
       currentKey = nextNode.id;
@@ -154,11 +228,12 @@ function TreeNode({ node, depth, expandedFolders, selectedFilePath, onToggleFold
 
 function PageGraphNode({ node, depth }) {
   return (
-    <div className="appmap-page-node-wrap">
-      <div className="appmap-page-node" style={{ marginLeft: `${depth * 14}px` }}>
-        <span className="appmap-page-segment">{node.segment}</span>
-        {node.routeCount > 0 ? <span className="appmap-page-count">{node.routeCount}</span> : null}
-        {node.methods.length > 0 ? <span className="appmap-page-methods">{node.methods.join(" ")}</span> : null}
+    <div className="appmap-flow-node-wrap" style={{ marginLeft: `${depth * 16}px` }}>
+      <div className="appmap-flow-node">
+        <span className="appmap-flow-segment">{node.segment}</span>
+        {node.routeCount > 0 ? <span className="appmap-flow-count">routes {node.routeCount}</span> : null}
+        {node.authRouteCount > 0 ? <span className="appmap-flow-auth">auth {node.authRouteCount}</span> : null}
+        {node.methods.length > 0 ? <span className="appmap-flow-methods">{node.methods.join(" ")}</span> : null}
       </div>
       {(node.children || []).map((child) => (
         <PageGraphNode key={child.id} node={child} depth={depth + 1} />
@@ -167,7 +242,7 @@ function PageGraphNode({ node, depth }) {
   );
 }
 
-function RouteCard({ route, selected, expanded, testDraft, onSelect, onToggleExpand, onToggleTest, onTestDraftChange, onRunTest }) {
+function RouteCard({ route, selected, expanded, testDraft, onSelect, onToggleExpand, onToggleTest, onTestDraftChange, onRunTest, onOpenLive }) {
   return (
     <article className={selected ? "appmap-route-card selected" : "appmap-route-card"}>
       <header className="appmap-route-head">
@@ -187,6 +262,7 @@ function RouteCard({ route, selected, expanded, testDraft, onSelect, onToggleExp
         <div className="appmap-route-actions">
           <span className={`appmap-auth-badge ${statusClass(route.authStatus)}`}>{route.authStatus}</span>
           {!route.sourceReadable ? <span className="appmap-source-warn">SOURCE UNREADABLE</span> : null}
+          <button type="button" className="appmap-inline-btn" onClick={onOpenLive}>Open Live</button>
           <button type="button" className="appmap-inline-btn" onClick={onToggleExpand}>{expanded ? "Collapse" : "Expand"}</button>
           <button type="button" className="appmap-inline-btn" onClick={onToggleTest}>Test</button>
         </div>
@@ -232,6 +308,13 @@ function RouteCard({ route, selected, expanded, testDraft, onSelect, onToggleExp
               <textarea
                 value={testDraft.paramsText}
                 onChange={(event) => onTestDraftChange({ paramsText: event.target.value })}
+              />
+            </label>
+            <label>
+              Query Params (name=value)
+              <textarea
+                value={testDraft.queryText}
+                onChange={(event) => onTestDraftChange({ queryText: event.target.value })}
               />
             </label>
             <label>
@@ -288,6 +371,8 @@ export default function AppMap() {
   const selectedFilePath = useMapStore((state) => state.selectedFilePath);
   const fileFilterPath = useMapStore((state) => state.fileFilterPath);
   const routeTests = useMapStore((state) => state.routeTests);
+  const authRouteChecks = useMapStore((state) => state.authRouteChecks);
+  const authWorkflow = authRouteChecks?.workflow || null;
 
   const hydrate = useMapStore((state) => state.hydrate);
   const refresh = useMapStore((state) => state.refresh);
@@ -304,6 +389,7 @@ export default function AppMap() {
   const toggleTestPanel = useMapStore((state) => state.toggleTestPanel);
   const updateTestDraft = useMapStore((state) => state.updateTestDraft);
   const runRouteTest = useMapStore((state) => state.runRouteTest);
+  const runAuthRouteChecks = useMapStore((state) => state.runAuthRouteChecks);
 
   React.useEffect(() => {
     hydrate();
@@ -432,6 +518,27 @@ export default function AppMap() {
     });
     return [...groups.entries()];
   }, [filteredRoutes]);
+
+  const authSurface = React.useMemo(
+    () => detectAuthSurface(routes, projectInfo?.targetUrl),
+    [projectInfo?.targetUrl, routes],
+  );
+
+  const openRouteLive = React.useCallback(async (route) => {
+    const url = buildLiveRouteUrl(projectInfo?.targetUrl, route);
+    if (!url) {
+      return;
+    }
+    await window.dockium?.window?.openExternal?.(url);
+  }, [projectInfo?.targetUrl]);
+
+  const openFirstAuthRoute = React.useCallback(async (kind) => {
+    const detectedUrl = kind === "register" ? authSurface.registerUiUrl : authSurface.loginUiUrl;
+    if (!detectedUrl) {
+      return;
+    }
+    await window.dockium?.window?.openExternal?.(detectedUrl);
+  }, [authSurface.loginUiUrl, authSurface.registerUiUrl]);
 
   const effectiveAuthInfo = authInfo || scanStatus?.authInfo || null;
 
@@ -647,6 +754,104 @@ export default function AppMap() {
             <div className="appmap-v2-note">
               Auth handling: App Map attempts automatic login using configured credentials. You can still apply a token manually to override.
             </div>
+            {fileFilterPath ? (
+              <div className="appmap-v2-note">
+                File filter is active ({fileFilterPath}). This can hide many routes.
+                <button type="button" className="appmap-inline-btn" onClick={clearFileFilter}>Show All Routes</button>
+              </div>
+            ) : null}
+            <div className="appmap-v2-note">
+              Login/Register API endpoints detected: {authSurface.apiAuthRoutes.length}
+              <div className="appmap-auth-test-actions">
+                <button type="button" className="appmap-inline-btn" onClick={runAuthRouteChecks} disabled={authRouteChecks.loading}>
+                  {authRouteChecks.loading ? "Testing..." : "Test Login/Register"}
+                </button>
+                <button type="button" className="appmap-inline-btn" onClick={() => openFirstAuthRoute("login")} disabled={!authSurface.loginUiUrl}>
+                  Open Login
+                </button>
+                <button type="button" className="appmap-inline-btn" onClick={() => openFirstAuthRoute("register")} disabled={!authSurface.registerUiUrl}>
+                  Open Register
+                </button>
+              </div>
+            </div>
+            <div className="appmap-v2-note">
+              Detected UI auth URLs: login {authSurface.loginUiUrl || "not detected"} | register {authSurface.registerUiUrl || "not detected"}
+            </div>
+            <div className="appmap-v2-note">
+              Detected API auth endpoints: login {authSurface.apiLoginPath || "not detected"} | register {authSurface.apiRegisterPath || "not detected"}
+            </div>
+            {authRouteChecks.error ? <div className="appmap-v2-warn">{authRouteChecks.error}</div> : null}
+            {authWorkflow ? (
+              <div className="appmap-auth-workflow">
+                <div className="appmap-auth-workflow-row">
+                  <span>Register</span>
+                  <span>{authWorkflow.register.attempted ? (authWorkflow.register.ok ? "PASS" : "FAIL") : "N/A"}</span>
+                  <span>{authWorkflow.register.path || "--"}</span>
+                  <span>{authWorkflow.register.statusCode || "--"}</span>
+                </div>
+                <div className="appmap-auth-workflow-row">
+                  <span>Login</span>
+                  <span>{authWorkflow.login.attempted ? (authWorkflow.login.ok ? "PASS" : "FAIL") : "N/A"}</span>
+                  <span>{authWorkflow.login.path || "--"}</span>
+                  <span>{authWorkflow.login.statusCode || "--"}</span>
+                </div>
+                <div className="appmap-auth-workflow-row">
+                  <span>Protected</span>
+                  <span>{authWorkflow.protected.attempted ? (authWorkflow.protected.ok ? "PASS" : "FAIL") : "N/A"}</span>
+                  <span>{authWorkflow.protected.path || "--"}</span>
+                  <span>{authWorkflow.protected.statusCode || "--"}</span>
+                </div>
+                <div className="appmap-auth-workflow-row">
+                  <span>Post-Auth Sweep</span>
+                  <span>{authWorkflow.postAuthSweep?.attempted ? (authWorkflow.postAuthSweep.failed > 0 ? "PARTIAL" : "PASS") : "N/A"}</span>
+                  <span>
+                    {authWorkflow.postAuthSweep?.attempted
+                      ? `pages ${authWorkflow.postAuthSweep.pageRoutes || 0} | api ${authWorkflow.postAuthSweep.apiRoutes || 0}`
+                      : "--"}
+                  </span>
+                  <span>
+                    {authWorkflow.postAuthSweep?.attempted
+                      ? `${authWorkflow.postAuthSweep.passed || 0}/${authWorkflow.postAuthSweep.tested || 0}`
+                      : "--"}
+                  </span>
+                </div>
+                <div className="appmap-auth-workflow-artifacts">
+                  Auth Artifact: token {authWorkflow.authArtifact?.token ? "YES" : "NO"} | cookie {authWorkflow.authArtifact?.cookie ? "YES" : "NO"}
+                </div>
+                {authWorkflow.postAuthSweep?.attempted && authWorkflow.postAuthSweep?.detail ? (
+                  <div className="appmap-auth-workflow-artifacts">
+                    {authWorkflow.postAuthSweep.detail}
+                  </div>
+                ) : null}
+                {authWorkflow.aiPayloadHelp?.attempted ? (
+                  <div className="appmap-auth-workflow-artifacts">
+                    AI Payload Help: {authWorkflow.aiPayloadHelp?.used ? "USED" : "ATTEMPTED"}
+                    {authWorkflow.aiPayloadHelp?.status ? ` | status ${authWorkflow.aiPayloadHelp.status}` : ""}
+                    {authWorkflow.aiPayloadHelp?.detail ? ` | ${authWorkflow.aiPayloadHelp.detail}` : ""}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+            {authRouteChecks.results.length > 0 ? (
+              <div className="appmap-auth-test-results">
+                {authRouteChecks.results.map((entry) => (
+                  <div key={`${entry.routeId}-${entry.kind}`} className="appmap-auth-test-row">
+                    <span>
+                      {entry.kind.toUpperCase()} {entry.method} {entry.path}
+                      {Array.isArray(entry.payloadKeys) && entry.payloadKeys.length > 0
+                        ? ` | payload: ${entry.payloadKeys.join(",")}`
+                        : ""}
+                      {Array.isArray(entry.triedStatuses) && entry.triedStatuses.length > 0
+                        ? ` | tried: ${entry.triedStatuses.join("/")}`
+                        : ""}
+                      {entry.payloadSource ? ` | source: ${entry.payloadSource}` : ""}
+                      {entry.responsePreview ? ` | response: ${entry.responsePreview}` : ""}
+                    </span>
+                    <span>{entry.ok ? `HTTP ${entry.statusCode || "--"}` : `FAILED: ${entry.error}`}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
             {loading ? <div className="appmap-v2-empty">Loading app map...</div> : null}
             {error ? <div className="appmap-v2-error">{error}</div> : null}
             {!loading && filteredRoutes.length === 0 ? (
@@ -655,36 +860,40 @@ export default function AppMap() {
               </div>
             ) : null}
 
-            {groupedRoutes.map(([packageName, packageRoutes]) => (
-              <section key={packageName} className="appmap-route-group">
-                <h4>{packageName}</h4>
-                {packageRoutes.map((route) => {
-                  const testDraft = routeTests[route.id] || {
-                    open: false,
-                    loading: false,
-                    headersText: "{}",
-                    paramsText: "",
-                    bodyText: "{}",
-                    result: null,
-                    error: "",
-                  };
-                  return (
-                    <RouteCard
-                      key={route.id}
-                      route={route}
-                      selected={selectedRouteId === route.id}
-                      expanded={Boolean(expandedRoutes[route.id])}
-                      testDraft={testDraft}
-                      onSelect={() => selectRoute(route.id)}
-                      onToggleExpand={() => toggleRouteExpand(route.id)}
-                      onToggleTest={() => toggleTestPanel(route.id)}
-                      onTestDraftChange={(patch) => updateTestDraft(route.id, patch)}
-                      onRunTest={() => runRouteTest(route.id)}
-                    />
-                  );
-                })}
-              </section>
-            ))}
+            <div className="appmap-routes-scroll">
+              {groupedRoutes.map(([packageName, packageRoutes]) => (
+                <section key={packageName} className="appmap-route-group">
+                  <h4>{packageName}</h4>
+                  {packageRoutes.map((route) => {
+                    const testDraft = routeTests[route.id] || {
+                      open: false,
+                      loading: false,
+                      headersText: "{}",
+                      paramsText: "",
+                      queryText: "",
+                      bodyText: "{}",
+                      result: null,
+                      error: "",
+                    };
+                    return (
+                      <RouteCard
+                        key={route.id}
+                        route={route}
+                        selected={selectedRouteId === route.id}
+                        expanded={Boolean(expandedRoutes[route.id])}
+                        testDraft={testDraft}
+                        onSelect={() => selectRoute(route.id)}
+                        onToggleExpand={() => toggleRouteExpand(route.id)}
+                        onToggleTest={() => toggleTestPanel(route.id)}
+                        onTestDraftChange={(patch) => updateTestDraft(route.id, patch)}
+                        onRunTest={() => runRouteTest(route.id)}
+                        onOpenLive={() => openRouteLive(route)}
+                      />
+                    );
+                  })}
+                </section>
+              ))}
+            </div>
           </main>
         ) : null}
       </div>

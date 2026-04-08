@@ -11,9 +11,81 @@ function summarizeFindings(findings) {
   return summary;
 }
 
+const GROQ_CHAT_COMPLETIONS_URL = "https://api.groq.com/openai/v1/chat/completions";
+const GROQ_DEFAULT_MODEL = "llama-3.1-8b-instant";
+
+async function probeAiEndpoint(settings = {}) {
+  const endpoint = String(settings?.reportLlmEndpoint || GROQ_CHAT_COMPLETIONS_URL).trim() || GROQ_CHAT_COMPLETIONS_URL;
+  const model = String(settings?.reportLlmModel || GROQ_DEFAULT_MODEL).trim() || GROQ_DEFAULT_MODEL;
+  const apiKey = String(settings?.reportLlmApiKey || "").trim();
+
+  if (!apiKey) {
+    return {
+      ok: false,
+      probe: {
+        attempted: false,
+        endpoint,
+        status: 0,
+        detail: "Missing Groq API key in Settings > Scanner (or Report).",
+      },
+    };
+  }
+
+  const headers = {
+    "Content-Type": "application/json",
+    "User-Agent": "Mozilla/5.0",
+    Authorization: /^bearer\s+/i.test(apiKey) ? apiKey : `Bearer ${apiKey}`,
+  };
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3500);
+    let response;
+    try {
+      response = await fetch(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: "Reply with OK only." },
+            { role: "user", content: "Dockium scanner connectivity check" },
+          ],
+          temperature: 0,
+          max_tokens: 8,
+        }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    return {
+      ok: response.ok,
+      probe: {
+        attempted: true,
+        endpoint,
+        status: Number(response.status || 0),
+        detail: response.ok ? "AI endpoint reachable." : `AI endpoint returned ${response.status}`,
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      probe: {
+        attempted: true,
+        endpoint,
+        status: 0,
+        detail: String(error?.message || "AI endpoint probe failed"),
+      },
+    };
+  }
+}
+
 function registerScanIpc(ipcMain, deps) {
   const {
     getProjectConfig,
+    getSettings,
     createScanOrchestrator,
     buildReport,
     setLastScan,
@@ -29,7 +101,7 @@ function registerScanIpc(ipcMain, deps) {
     }
 
     const requestedTarget = String(payload.targetUrl || "").trim();
-    const config = requestedTarget
+    let config = requestedTarget
       ? {
           ...baseConfig,
           project: {
@@ -39,7 +111,29 @@ function registerScanIpc(ipcMain, deps) {
         }
       : baseConfig;
 
+    const settings = typeof getSettings === "function" ? getSettings() : null;
+    if (settings && typeof settings === "object") {
+      config = {
+        ...config,
+        settings,
+        wss: getWss?.() || null,
+      };
+    } else {
+      config = {
+        ...config,
+        wss: getWss?.() || null,
+      };
+    }
+
     const mode = payload.mode === "quick" ? "quick" : "full";
+    const aiProbeResult = await probeAiEndpoint(settings || {});
+    getWss()?.emitLog(
+      aiProbeResult.ok
+        ? `AI endpoint probe succeeded (${aiProbeResult?.probe?.endpoint || "unset"})`
+        : `AI endpoint probe failed (${aiProbeResult?.probe?.detail || "unknown"})`,
+      aiProbeResult.ok ? "info" : "warn"
+    );
+
     await ensureScanRuntime?.(config);
     const orchestrator = createScanOrchestrator(config);
     getWss()?.emitLog(`Scan started (${mode})`);
@@ -55,6 +149,17 @@ function registerScanIpc(ipcMain, deps) {
       mode,
       durationMs,
       findings: result.findings || [],
+      operations: {
+        ...(result.operations || {}),
+        aiProbe: {
+          attempted: Boolean(aiProbeResult?.probe?.attempted),
+          ok: Boolean(aiProbeResult?.ok),
+          endpoint: String(aiProbeResult?.probe?.endpoint || ""),
+          status: Number(aiProbeResult?.probe?.status || 0),
+          detail: String(aiProbeResult?.probe?.detail || ""),
+          checkedAt: new Date().toISOString(),
+        },
+      },
       summary,
       completedAt: new Date().toISOString(),
     };
@@ -87,9 +192,26 @@ function registerScanIpc(ipcMain, deps) {
     return {
       ok: true,
       status: scan
-        ? { phase: "completed", summary: scan.summary, completedAt: scan.completedAt }
+        ? {
+            phase: "completed",
+            summary: scan.summary,
+            completedAt: scan.completedAt,
+            operations: scan.operations || {},
+          }
         : { phase: "idle" },
     };
+  });
+
+  ipcMain.handle("scan:testAiConnection", async () => {
+    const settings = typeof getSettings === "function" ? getSettings() : {};
+    const result = await probeAiEndpoint(settings || {});
+    getWss()?.emitLog(
+      result.ok
+        ? `AI endpoint probe succeeded (${result.probe.endpoint || "unset"})`
+        : `AI endpoint probe failed (${result.probe.detail})`,
+      result.ok ? "info" : "warn"
+    );
+    return result;
   });
 }
 

@@ -131,13 +131,45 @@ export default function ProxyView() {
     replaySelectedRequest,
     forwardSelected,
     dropSelected,
+    exportSnapshot,
+    exportInfo,
   } = useProxyStore();
 
   const [topPercent, setTopPercent] = React.useState(40);
   const [leftPercent, setLeftPercent] = React.useState(50);
+  const autoStartRef = React.useRef(false);
 
   React.useEffect(() => {
     hydrate();
+  }, [hydrate]);
+
+  React.useEffect(() => {
+    if (autoStartRef.current) {
+      return;
+    }
+    autoStartRef.current = true;
+
+    (async () => {
+      const status = await window.dockium?.proxy?.getStatus?.();
+      if (!status?.status?.running) {
+        await window.dockium?.proxy?.start?.();
+        const settings = await window.dockium?.settingsGetAll?.();
+        if (settings?.interceptByDefault) {
+          await window.dockium?.proxy?.setIntercept?.({ enabled: true });
+        }
+      }
+      await hydrate();
+    })();
+  }, [hydrate]);
+
+  React.useEffect(() => {
+    const timer = window.setInterval(() => {
+      hydrate();
+    }, 2000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
   }, [hydrate]);
 
   const fullPanelRef = React.useRef(null);
@@ -152,7 +184,19 @@ export default function ProxyView() {
       return requests;
     }
 
-    return requests.filter((request) => request.path.toLowerCase().includes(query));
+    return requests.filter((request) => {
+      const haystack = [
+        request.method,
+        request.host,
+        request.path,
+        request.status,
+        request.requestFormat,
+        request.responseFormat,
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(query);
+    });
   }, [filterText, requests]);
 
   const selectedRequest = React.useMemo(
@@ -199,6 +243,12 @@ export default function ProxyView() {
         </button>
         <button className="proxy-btn" onClick={forwardSelected}>Forward</button>
         <button className="proxy-btn" onClick={dropSelected}>Drop</button>
+        <button className="proxy-btn" onClick={exportSnapshot} disabled={exportInfo.loading}>
+          {exportInfo.loading ? "Exporting..." : "Export Snapshot"}
+        </button>
+        {exportInfo.detail ? (
+          <span className={exportInfo.ok ? "proxy-export-note" : "proxy-export-note error"}>{exportInfo.detail}</span>
+        ) : null}
       </header>
 
       <div className="proxy-layout" ref={fullPanelRef} style={{ gridTemplateRows: layoutRows }}>
@@ -213,6 +263,9 @@ export default function ProxyView() {
                   <th>HOST</th>
                   <th>PATH</th>
                   <th>STATUS</th>
+                  <th>REQ</th>
+                  <th>RES</th>
+                  <th>BYTES</th>
                   <th>TIME</th>
                   <th>FLAG</th>
                 </tr>
@@ -220,10 +273,11 @@ export default function ProxyView() {
               <tbody>
                 {filteredRequests.map((request) => {
                   const selected = selectedRequest?.id === request.id;
+                  const normalizedFlag = String(request.flag || "").toUpperCase();
                   const flagClass =
-                    request.flag === "FINDING"
+                    normalizedFlag === "FINDING"
                       ? "proxy-flag-finding"
-                      : request.flag === "SUSPICIOUS"
+                      : normalizedFlag === "SUSPICIOUS"
                         ? "proxy-flag-suspicious"
                         : "";
                   return (
@@ -237,6 +291,13 @@ export default function ProxyView() {
                       <td>{request.host}</td>
                       <td>{request.path}</td>
                       <td>{request.status}</td>
+                      <td>
+                        <span className="proxy-format-chip">{request.requestFormat}</span>
+                      </td>
+                      <td>
+                        <span className="proxy-format-chip">{request.responseFormat}</span>
+                      </td>
+                      <td>{request.requestBytes}/{request.responseBytes}</td>
                       <td>{request.timeMs}ms</td>
                       <td className={flagClass}>{request.flag}</td>
                     </tr>
@@ -244,7 +305,7 @@ export default function ProxyView() {
                 })}
                 {filteredRequests.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="proxy-empty-cell">
+                    <td colSpan={10} className="proxy-empty-cell">
                       No requests matched the filter.
                     </td>
                   </tr>
@@ -270,6 +331,11 @@ export default function ProxyView() {
                 <span className="proxy-raw-body">{requestSections.body}</span>
               </pre>
             </div>
+            <div className="proxy-request-meta">
+              <span>Format {selectedRequest?.requestFormat || "--"}</span>
+              <span>Bytes {selectedRequest?.requestBytes || 0}</span>
+              <span>Direction {selectedRequest?.direction || "--"}</span>
+            </div>
             <textarea
               className="proxy-request-editor"
               value={selectedRequest?.requestRaw ?? ""}
@@ -277,7 +343,7 @@ export default function ProxyView() {
             />
             <div className="proxy-panel-actions">
               <button className="proxy-btn" onClick={replaySelectedRequest}>Replay</button>
-              <button className="proxy-btn">Save</button>
+              <button className="proxy-btn" onClick={exportSnapshot} disabled={exportInfo.loading}>Save</button>
             </div>
           </section>
 
@@ -290,6 +356,11 @@ export default function ProxyView() {
               {responseSections.body ? "\n\n" : ""}
               <span className="proxy-raw-body">{responseSections.body}</span>
             </pre>
+            <div className="proxy-request-meta">
+              <span>Format {selectedRequest?.responseFormat || "--"}</span>
+              <span>Bytes {selectedRequest?.responseBytes || 0}</span>
+              <span>Status {selectedRequest?.status || 0}</span>
+            </div>
             <div className="proxy-panel-actions">
               <button
                 className="proxy-btn"

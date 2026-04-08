@@ -1,0 +1,37 @@
+:root {
+  --bg-base: #f3f5f8; /* main content background */
+  --bg-sidebar: #f8f9fb; /* sidebar + titlebar */
+  --bg-panel: #ffffff; /* inner panels, cards */
+  --bg-hover: #eef1f5; /* hover state for rows */
+  --bg-selected: #e8edf4; /* selected row / active nav */
+
+  --border: #e1e6ee; /* default border */
+  --border-strong: #c8d1dd; /* emphasized border */
+
+  --text-primary: #111111; /* main readable text */
+  --text-secondary: #4f5b6b; /* labels, metadata */
+  --text-dim: #7d8796; /* placeholders, disabled */
+  --text-code: #1f2937; /* monospace code snippets */
+
+  --status-red: #cc3333; /* critical / error / blocked */
+  --status-yellow: #ccaa00; /* warning / suspicious */
+  --status-green: #33aa55; /* pass / clean / success */
+  --status-blue: #4488cc; /* info / info-level finding */
+
+  --font-sans: 'Inter', 'IBM Plex Sans', 'Segoe UI', Arial, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Courier New', monospace;
+  --font-size-sm: 11px;
+  --font-size-base: 13px;
+  --font-size-lg: 15px;
+
+  --space-1: 8px;
+  --space-2: 16px;
+  --space-3: 24px;
+  --space-4: 32px;
+
+  --radius: 8px;
+  --row-height: 28px;
+  --sidebar-width: 280px;
+  --titlebar-height: 44px;
+  --statusbar-height: 22px;
+}

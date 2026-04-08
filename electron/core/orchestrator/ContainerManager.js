@@ -4,8 +4,7 @@ import NetworkManager from './NetworkManager.js'
 import HealthMonitor from './HealthMonitor.js'
 
 const docker = new Docker()
-const DEFAULT_CONTAINER_NAMES = ['dockium-scanner', 'dockium-zap', 'dockium-proxy', 'dockium-app']
-const ZAP_IMAGE_CANDIDATES = ['zaproxy/zap-stable', 'owasp/zap2docker-stable']
+const DEFAULT_CONTAINER_NAMES = ['dockium-scanner', 'dockium-proxy', 'dockium-app']
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -57,7 +56,7 @@ class ContainerManager {
   }
 
   buildContainerNames(config) {
-    const names = ['dockium-scanner', 'dockium-zap', 'dockium-proxy']
+    const names = ['dockium-scanner', 'dockium-proxy']
     if (this.shouldStartAppContainer(config)) {
       names.push('dockium-app')
     }
@@ -73,7 +72,6 @@ class ContainerManager {
       this.containerNames = this.buildContainerNames(config)
       this.networkName = await this.networkManager.createNetwork('dockium-net')
 
-      // Boot order prioritizes app availability; ZAP warmup is non-blocking.
       await this.startScanner(config)
       if (this.shouldUseDbContainer(config)) {
         await this.startDb(config)
@@ -81,14 +79,6 @@ class ContainerManager {
       await this.startProxy(config)
       if (this.shouldStartAppContainer(config)) {
         await this.startApp(config)
-      }
-
-      if (config?.modules?.zap !== false) {
-        try {
-          await this.startZap(config)
-        } catch (error) {
-          config?.wss?.emitLog(`ZAP warmup pending: ${String(error?.message || 'startup pending')}`, 'warn')
-        }
       }
 
       this.healthMonitor.start(this.containerNames)
@@ -162,23 +152,6 @@ class ContainerManager {
     })
     wss?.emitLog(`Pulled ${label} image (${image})`)
     return image
-  }
-
-  async resolveZapImage(config) {
-    let lastError = null
-
-    for (const image of ZAP_IMAGE_CANDIDATES) {
-      try {
-        await this.ensureImage(image, { wss: config?.wss, label: 'ZAP' })
-        return image
-      } catch (error) {
-        lastError = error
-        config?.wss?.emitLog(`Failed to pull ZAP image ${image}: ${error.message}`, 'warn')
-      }
-    }
-
-    const detail = String(lastError?.message || 'unknown pull error')
-    throw new Error(`Unable to download a ZAP image (${ZAP_IMAGE_CANDIDATES.join(', ')}). ${detail}`)
   }
 
   async startDb(config) {
@@ -297,30 +270,6 @@ DOCKIUM_PROXY=http://localhost:8080
     })
   }
 
-  async startZap(config) {
-    return this.withOperationLock('container:dockium-zap', async () => {
-      console.log('Starting OWASP ZAP container...')
-      const zapImage = await this.resolveZapImage(config)
-      await this.removeIfExists('dockium-zap')
-
-      const c = await docker.createContainer({
-        Image: zapImage,
-        name: 'dockium-zap',
-        Cmd: [
-          'zap.sh', '-daemon', '-port', '8090', '-host', '0.0.0.0'
-        ],
-        HostConfig: {
-          NetworkMode: this.networkName,
-          PortBindings: { '8090/tcp': [{ HostPort: '8090' }] }
-        }
-      })
-
-      await c.start()
-      // Extended timeout for ZAP API initialization (90 retries × 2s = 180s total)
-      await this.waitForPort(8090, 'ZAP', 90, 2000)
-    })
-  }
-
   async startScanner(config) {
     return this.withOperationLock('container:dockium-scanner', async () => {
       console.log('Starting scanner container...')
@@ -342,7 +291,6 @@ DOCKIUM_PROXY=http://localhost:8080
         Cmd: ['node', '-e', 'setInterval(()=>{},1000)'],
         Env: [
           `DOCKIUM_TARGET=${targetUrl}`,
-          'DOCKIUM_ZAP=http://dockium-zap:8090',
         ],
         HostConfig: {
           NetworkMode: this.networkName,
@@ -351,23 +299,6 @@ DOCKIUM_PROXY=http://localhost:8080
 
       await c.start()
     })
-  }
-
-  async ensureZapRunning(config) {
-    this.healthMonitor.wss = config?.wss || this.healthMonitor.wss
-    await this.ensureNetwork()
-
-    try {
-      const container = docker.getContainer('dockium-zap')
-      const info = await container.inspect()
-      if (info?.State?.Running) {
-        return
-      }
-    } catch {
-      // Continue to start a fresh container when it does not exist.
-    }
-
-    await this.startZap(config)
   }
 
   async ensureScannerRunning(config) {

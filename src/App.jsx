@@ -1,6 +1,7 @@
 import React from "react";
 import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
+import ActiveScanPage from "./pages/ActiveScanPage";
 import AppMap from "./pages/AppMap";
 import CvePage from "./pages/CvePage";
 import Dashboard from "./pages/Dashboard";
@@ -12,14 +13,12 @@ import Scanner from "./pages/Scanner";
 import SecretsPage from "./pages/SecretsPage";
 import Settings from "./pages/Settings";
 import SnapshotsPage from "./pages/SnapshotsPage";
-import ZapPage from "./pages/ZapPage";
 import { useContainerStore } from "./store/containerStore";
 import { useFleetStore } from "./store/fleetStore";
 import { useScanStore } from "./store/scanStore";
 import { useProxyStore } from "./store/proxyStore";
 import { useGitStore } from "./store/gitStore";
 import { useMapStore } from "./store/mapStore";
-import { useZapStore } from "./store/zapStore";
 
 function HomeRedirect() {
   const [targetPath, setTargetPath] = React.useState(null);
@@ -126,7 +125,6 @@ export default function App() {
     useMapStore.getState().hydrate?.();
     useScanStore.getState().hydrateStatus?.();
     useFleetStore.getState().hydrate?.();
-    useZapStore.getState().hydrate?.();
   }, []);
 
   React.useEffect(() => {
@@ -239,10 +237,6 @@ export default function App() {
       useFleetStore.getState().applyFleetEvent?.(event);
     });
 
-    const unsubZapProgress = wsApi.onZapProgress?.((event) => {
-      useZapStore.getState().applyProgressEvent?.(event);
-    });
-
     return () => {
       unsubLog?.();
       unsubFinding?.();
@@ -251,7 +245,6 @@ export default function App() {
       unsubScanProgress?.();
       unsubScanComplete?.();
       unsubFleet?.();
-      unsubZapProgress?.();
     };
   }, []);
 
@@ -266,8 +259,8 @@ export default function App() {
           <Route path="app-map" element={<AppMap />} />
           <Route path="proxy" element={<ProxyView />} />
           <Route path="scanner" element={<Scanner />} />
+          <Route path="active-scan" element={<ActiveScanPage />} />
           <Route path="browser-fleet" element={<Navigate to="/scanner" replace />} />
-          <Route path="zap" element={<ZapPage />} />
           <Route path="secrets" element={<SecretsPage />} />
           <Route path="cve-scanner" element={<CvePage />} />
           <Route path="git-gate" element={<GitGate />} />

@@ -10,7 +10,6 @@ const defaultSettings = {
   interceptByDefault: false,
   sslCertTrust: "Auto install",
   defaultScanMode: "Full",
-  zapContainerPort: 8090,
   payloadIntensity: "Medium",
   timeoutPerRequest: 5000,
   gitBlockCritical: true,

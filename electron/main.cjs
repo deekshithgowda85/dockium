@@ -5,9 +5,9 @@ const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require("electron")
 
 const { registerDockerIpc } = require("./ipc/docker.ipc.cjs");
 const { registerScanIpc } = require("./ipc/scan.ipc.cjs");
+const { registerNucleiIpc } = require("./ipc/nuclei.ipc.cjs");
 const { registerGitIpc } = require("./ipc/git.ipc.cjs");
 const { registerProxyIpc } = require("./ipc/proxy.ipc.cjs");
-const { registerZapIpc } = require("./ipc/zap.ipc.cjs");
 const { registerProjectIpc } = require("./ipc/project.ipc.cjs");
 const { registerReportIpc } = require("./ipc/report.ipc.cjs");
 const { registerFleetIpc } = require("./ipc/fleet.ipc.cjs");
@@ -24,11 +24,11 @@ const runtime = {
   generateDockerfile: null,
   ContainerManager: null,
   ScanOrchestrator: null,
+  NucleiScanner: null,
   DiscoveryEngine: null,
   GitHookInstaller: null,
   GitGate: null,
   ProxyEngine: null,
-  ZapBridge: null,
   BrowserFleet: null,
   Ingestion: null,
   ReportBuilder: null,
@@ -62,7 +62,6 @@ const defaultSettings = {
   interceptByDefault: false,
   sslCertTrust: "Auto install",
   defaultScanMode: "Full",
-  zapContainerPort: 8090,
   payloadIntensity: "Medium",
   timeoutPerRequest: 5000,
   gitBlockCritical: true,
@@ -206,11 +205,11 @@ async function bootstrapCoreRuntime() {
     dockerGenMod,
     containerManagerMod,
     scanMod,
+    nucleiScannerMod,
     discoveryMod,
     gitHookMod,
     gitGateMod,
     proxyMod,
-    zapBridgeMod,
     browserMod,
     wsMod,
     ingestionMod,
@@ -224,11 +223,11 @@ async function bootstrapCoreRuntime() {
     import(coreModulePath("docker/generator.js")),
     import(coreModulePath("orchestrator/ContainerManager.js")),
     import(coreModulePath("scanner/ScanOrchestrator.js")),
+    import(coreModulePath("scanner/modules/NucleiScanner.js")),
     import(coreModulePath("scanner/DiscoveryEngine.js")),
     import(coreModulePath("git/GitHookInstaller.js")),
     import(coreModulePath("git/GitGate.js")),
     import(coreModulePath("proxy/ProxyEngine.js")),
-    import(coreModulePath("proxy/ZapBridge.js")),
     import(coreModulePath("browser/BrowserFleet.js")),
     import(coreModulePath("realtime/WebSocketServer.js")),
     import(coreModulePath("ingestion/Ingestion.js")),
@@ -243,11 +242,11 @@ async function bootstrapCoreRuntime() {
   runtime.generateDockerfile = dockerGenMod.generateDockerfile;
   runtime.ContainerManager = containerManagerMod.default;
   runtime.ScanOrchestrator = scanMod.default;
+  runtime.NucleiScanner = nucleiScannerMod.default;
   runtime.DiscoveryEngine = discoveryMod.default;
   runtime.GitHookInstaller = gitHookMod.default;
   runtime.GitGate = gitGateMod.default;
   runtime.ProxyEngine = proxyMod.default;
-  runtime.ZapBridge = zapBridgeMod.default;
   runtime.BrowserFleet = browserMod.default;
   runtime.Ingestion = ingestionMod.default;
   runtime.ReportBuilder = reportBuilderMod.default;
@@ -295,7 +294,6 @@ function buildProjectConfig(repoPath, frameworkInfo, options = {}) {
       testUserPass: "Password123!",
     },
     modules: {
-      zap: true,
       browserFleet: true,
       browserUse: true,
       proxy: true,
@@ -441,7 +439,6 @@ async function hydrateImportedImageProject(imageRef, options = {}) {
       testUserPass: "Password123!",
     },
     modules: {
-      zap: true,
       browserFleet: true,
       browserUse: true,
       proxy: true,
@@ -610,10 +607,6 @@ function registerCoreIpcHandlers() {
         return;
       }
       await runtime.ContainerManager.ensureScannerRunning({ ...config, wss: runtime.wss });
-
-      if (runtime.ContainerManager?.ensureZapRunning) {
-        await runtime.ContainerManager.ensureZapRunning({ ...config, wss: runtime.wss });
-      }
     },
     buildReport: async (scanResult) => {
       const builder = new runtime.ReportBuilder();
@@ -626,6 +619,21 @@ function registerCoreIpcHandlers() {
       runtime.latestReport = report;
     },
     getLastScan: () => runtime.lastScan,
+    getWss: () => runtime.wss,
+  });
+
+  registerNucleiIpc(ipcMain, {
+    getProjectConfig: () => runtime.projectConfig,
+    createNucleiScanner: (config) => new runtime.NucleiScanner(config),
+    ensureNucleiRuntime: async (config) => {
+      if (runtime.ContainerManager?.ensureAppRunning) {
+        await runtime.ContainerManager.ensureAppRunning({ ...config, wss: runtime.wss });
+      }
+
+      if (runtime.ContainerManager?.ensureScannerRunning) {
+        await runtime.ContainerManager.ensureScannerRunning({ ...config, wss: runtime.wss });
+      }
+    },
     getWss: () => runtime.wss,
   });
 
@@ -658,18 +666,6 @@ function registerCoreIpcHandlers() {
       return runtime.proxyEngine;
     },
     getProxyEngine: () => runtime.proxyEngine,
-    getWss: () => runtime.wss,
-  });
-
-  registerZapIpc(ipcMain, {
-    getProjectConfig: () => runtime.projectConfig,
-    createZapBridge: () => new runtime.ZapBridge(),
-    ensureZapRunning: async (config) => {
-      if (!runtime.ContainerManager?.ensureZapRunning) {
-        return;
-      }
-      await runtime.ContainerManager.ensureZapRunning({ ...config, wss: runtime.wss });
-    },
     getWss: () => runtime.wss,
   });
 
@@ -900,20 +896,6 @@ function registerCoreIpcHandlers() {
   });
 }
 
-function registerPreBootstrapIpcGuards() {
-  const channels = ["zap:start", "zap:getStatus", "zap:getAlerts", "zap:reset"];
-  for (const channel of channels) {
-    try {
-      ipcMain.removeHandler(channel);
-    } catch {}
-
-    ipcMain.handle(channel, async () => ({
-      ok: false,
-      error: "Dockium core runtime is still initializing. Retry in a moment.",
-    }));
-  }
-}
-
 function createSplashWindow() {
   splashWindow = new BrowserWindow({
     width: 500,
@@ -1095,7 +1077,6 @@ process.on("uncaughtException", (error) => {
 
 app.whenReady()
   .then(async () => {
-    registerPreBootstrapIpcGuards();
     await initPersistentStore();
     await bootstrapCoreRuntime();
     registerCoreIpcHandlers();

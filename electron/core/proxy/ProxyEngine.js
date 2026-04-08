@@ -1,7 +1,6 @@
 import HttpMitmProxy from 'http-mitm-proxy'
 import RequestCapture from './RequestCapture.js'
 import RequestModifier from './RequestModifier.js'
-import ZapBridge from './ZapBridge.js'
 
 class ProxyEngine {
   constructor(config) {
@@ -12,7 +11,6 @@ class ProxyEngine {
     this.running = false
     this.capture = new RequestCapture(10000)
     this.modifier = new RequestModifier()
-    this.zapBridge = new ZapBridge()
     this.wss = config?.wss || null
   }
 
@@ -87,9 +85,6 @@ class ProxyEngine {
 
     if (matching) {
       this.wss?.emit('request', matching)
-      if (matching.flag !== 'normal') {
-        this.zapBridge.forwardRequest(matching).catch(() => {})
-      }
     }
   }
 

@@ -5,6 +5,7 @@ import SecretsScanner from './modules/SecretsScanner.js'
 import CveScanner from './modules/CveScanner.js'
 import InfraScanner from './modules/InfraScanner.js'
 import DbScanner from './modules/DbScanner.js'
+import NucleiScanner from './modules/NucleiScanner.js'
 import DiscoveryEngine from './DiscoveryEngine.js'
 import BrowserUseOrchestrator from '../browser/BrowserUseOrchestrator.js'
 
@@ -32,7 +33,8 @@ class ScanOrchestrator {
       'input',
       'secrets',
       'cve',
-      'infra'
+      'infra',
+      'nuclei'
     ])
 
     // Run each module sequentially
@@ -116,6 +118,13 @@ class ScanOrchestrator {
 
     if (moduleName === 'infra') {
       return await new InfraScanner(this.config).scan()
+    }
+
+    if (moduleName === 'nuclei') {
+      const scanner = new NucleiScanner(this.config)
+      return await scanner.scan(this.config?.project?.targetUrl || '', {
+        severity: 'critical,high'
+      }).then((result) => result.findings || [])
     }
 
     if (moduleName === 'db') {

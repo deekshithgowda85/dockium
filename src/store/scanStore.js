@@ -7,6 +7,7 @@ const scannerModules = [
   { id: "infra", label: "Infra Scanner", enabled: true },
   { id: "secrets", label: "Secrets Scan", enabled: true },
   { id: "cve", label: "Dependency CVE", enabled: true },
+  { id: "nuclei", label: "Nuclei Active", enabled: true },
   { id: "browserUse", label: "Browser Use", enabled: true },
 ];
 

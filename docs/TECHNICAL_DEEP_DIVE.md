@@ -38,11 +38,11 @@
         │                              │                              │
         ▼                              ▼                              ▼
     ┌─────────────┐            ┌────────────────┐            ┌──────────────┐
-    │ dockium-app │            │ dockium-scanner│            │ dockium-zap  │
+    │ dockium-app │            │ dockium-scanner│            │ nuclei-task  │
     │             │            │                │            │              │
-    │ Your App    │            │ Node.js        │            │ OWASP ZAP    │
-    │ (imported   │            │ + Playwright   │            │ Proxy Engine │
-    │  or built)  │            │ + Discovery    │            │ Active Scan  │
+    │ Your App    │            │ Node.js        │            │ Nuclei       │
+    │ (imported   │            │ + Playwright   │            │ Active Scan  │
+    │  or built)  │            │ + Discovery    │            │ (ephemeral)  │
     └─────────────┘            │ Engine         │            │              │
                                └────────────────┘            └──────────────┘
 ```
@@ -59,11 +59,9 @@
 async startAll(config)              // Boot all containers in order
 async startApp(config)              // Build/run target application
 async startScanner(config)          // Start discovery + scanning engine
-async startZap(config)              // Start OWASP ZAP daemon
+async runNucleiScan(config)         // Run Dockerized Nuclei active scan
 async startProxy(config)            // Start HTTP intercept proxy
-async ensureZapRunning(config)      // Ensure ZAP availability
 async removeIfExists(name)          // Safe container cleanup (retry logic)
-async resolveZapImage(config)       // Pull ZAP image from registry
 async waitForPort(port, name)       // Health check for container readiness
 ```
 
@@ -77,7 +75,8 @@ async waitForPort(port, name)       // Health check for container readiness
 **Health Monitoring**:
 
 - Polls container ports after startup
-- Timeouts: App (30sec), ZAP (90sec), Scanner (immediate)
+- Timeouts: App (30sec), Scanner (immediate)
+- Nuclei runs as an ephemeral task container per active scan request
 - Retries with exponential backoff
 
 ---
@@ -233,7 +232,7 @@ MITM (Man-in-the-Middle) HTTP proxy:
 // Intercepts all HTTP/HTTPS traffic from browser
 // Logs request/response pairs
 // Can modify headers, body, timing
-// Feeds suspicious requests to ZAP
+// Feeds suspicious requests into active scan workflows
 ```
 
 **Flow**:
@@ -245,7 +244,7 @@ Browser Request → ProxyServer
                     ↓
                 [Apply Rules]
                     ↓
-                [Forward to ZAP if suspicious]
+                [Forward to active scan workflow if suspicious]
                     ↓
               Original Server
 ```
@@ -269,28 +268,19 @@ Captures all HTTP traffic details:
 }
 ```
 
-#### `ZapBridge.js`
+#### `NucleiScanner.js`
 
-Integrates OWASP ZAP:
+Integrates Dockerized Nuclei active scanning:
 
 ```javascript
-async startActiveScan(targetUrl) {
+async scan(targetUrl) {
   // Candidate URLs:
-  // 1. http://localhost:3000
-  // 2. http://host.docker.internal:3000 (from inside container)
-  // 3. http://dockium-app:3000 (Docker network)
+  // 1. http://host.docker.internal:3000
+  // 2. http://dockium-app:3000 (Docker network)
+  // 3. original target URL
 
-  // Tries each until one succeeds
-  // Returns scanId + targetUrl used
-}
-
-async getScanProgress(scanId) {
-  // Returns 0-100 progress
-}
-
-async getAlerts() {
-  // Returns list of vulnerabilities found
-  // Each alert: { severity, name, endpoint, description, fix }
+  // Runs nuclei with critical/high severity filters
+  // Returns findings: { severity, title, endpoint, description, proof, fix }
 }
 ```
 
@@ -320,8 +310,8 @@ async runFullScan(config) {
       infraScanner.scan(projectPath)
     ])
 
-  // 4. Start active ZAP scan (runs in background)
-  const zapScan = await zapBridge.startActiveScan(targetUrl)
+  // 4. Run active Nuclei scan
+  const nucleiFindings = await nucleiScanner.scan(targetUrl)
 
   // 5. Aggregate results
   return mergeResults({
@@ -331,7 +321,7 @@ async runFullScan(config) {
     secretVulns,
     depVulns,
     infraVulns,
-    zapScan
+    nucleiFindings
   })
 }
 ```
@@ -341,7 +331,7 @@ async runFullScan(config) {
 - Discovery + API Scanner: Parallel (share browser)
 - Auth/Secrets/Infra: Parallel (static analysis)
 - Dependencies: Parallel (package analysis)
-- ZAP: Background (continuous active scan)
+- Nuclei: Active scan task per run
 
 **Result Structure**:
 
@@ -558,14 +548,14 @@ Main Process: ScanOrchestrator.runFullScan()
     Emit WebSocket: "module_complete" (per module)
         ↓
     ┌─────────────────────────────────────────┐
-    │ Background Phase: Active ZAP Scan       │
+    │ Active Scan Phase: Nuclei Task          │
     ├─────────────────────────────────────────┤
-    │ • ZapBridge triggers active scan        │
-    │ • Poll progress every 2 seconds         │
-    │ • Aggregate alerts as they come in      │
+    │ • NucleiScanner runs in Docker          │
+    │ • Critical/high templates execute       │
+    │ • Findings normalized into scan result  │
     └─────────────────────────────────────────┘
         ↓
-    Emit WebSocket: "zap_progress" (continuous)
+    Emit WebSocket: "nuclei_progress"
         ↓
     Scan completes (user clicks "Stop" or 100%)
         ↓

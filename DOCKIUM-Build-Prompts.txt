@@ -58,13 +58,13 @@ Files:
 Use 'dockerode' npm package for all Docker operations.
 
 ContainerManager.js:
-  Manages four containers: app, proxy (http-mitm-proxy), zap, db.
+  Manages core containers: app, proxy (http-mitm-proxy), scanner, db.
 
   Methods required:
   - async startAll(projectConfig)
     → Creates isolated Docker network (dockium-net)
     → Pulls images if not cached (show progress via WebSocket)
-    → Starts containers in order: db → app → proxy → zap
+    → Starts containers in order: db → app → proxy → scanner
     → Waits for health checks before proceeding to next
     → Returns { success, containers }
 
@@ -297,7 +297,7 @@ Files:
   core/proxy/ProxyServer.js
   core/proxy/RequestCapture.js
   core/proxy/RequestModifier.js
-  core/proxy/ZapBridge.js
+  core/scanner/modules/NucleiScanner.js
 
 ProxyServer.js:
   Uses 'http-mitm-proxy' npm package.
@@ -307,7 +307,7 @@ ProxyServer.js:
   - Creates proxy instance
   - Intercepts all HTTP/HTTPS traffic
   - For each request: calls RequestCapture.capture(req, res)
-  - For suspicious requests (heuristics below): calls ZapBridge.forward(req)
+  - For suspicious requests (heuristics below): tags for active-scan follow-up
   - Streams all captured requests to UI via WebSocket: { type: 'request', data: reqObj }
 
   Suspicious request heuristics (auto-flag as SUSPICIOUS):
@@ -349,25 +349,14 @@ RequestModifier.js:
   - Returns new captured request object with isReplay: true
   - Emits via WebSocket so it appears in the proxy list
 
-ZapBridge.js:
-  Calls OWASP ZAP REST API on the ZAP container.
-  ZAP container address: http://zap:8090 (Docker internal DNS)
+NucleiScanner.js:
+  Runs Nuclei in an ephemeral Docker container.
 
-  async startActiveScan(targetUrl):
-  → POST /JSON/ascan/action/scan/?url={targetUrl}&recurse=true
-  → Returns scanId
-
-  async getScanProgress(scanId):
-  → GET /JSON/ascan/view/status/?scanId={scanId}
-  → Returns percentage complete
-
-  async getAlerts():
-  → GET /JSON/core/view/alerts/
-  → Maps ZAP alert format to DOCKIUM finding format:
-    { severity, name, endpoint, description, proof, fix }
-
-  async forwardRequest(capturedRequest):
-  → Submits request to ZAP spider for further crawling
+  async scan(targetUrl):
+  → Runs critical/high severity templates against candidate target URLs
+  → Normalizes output to DOCKIUM finding format:
+    { severity, title, endpoint, description, proof, fix }
+  → Returns findings[]
 
 B7. Browser Fleet
 
@@ -949,7 +938,7 @@ mysql2                     ^3.0.0    MySQL client
 bcrypt                     ^5.0.0    Password hashing in seeder
 
 Container Images
-owasp/zap2docker-stable   ZAP scanner container
+projectdiscovery/nuclei:latest   Nuclei active scanner container
 node:18-alpine            App container (Node.js projects)
 python:3.11-slim          App container (Python projects)
 postgres:15-alpine        Database container
@@ -995,7 +984,7 @@ F. IMPLEMENTATION TODO TRACKER (AUTO)
 [DONE]    B3 Framework Detector + Dockerfile Generator
 [DONE]    B4 App Ingestion Pipeline (core/ingestion/Ingestion.js)
 [DONE]    B5 Discovery Engine (mapper modules + scanner integration)
-[DONE]    B6 Proxy Engine (ProxyServer/RequestCapture/RequestModifier/ZapBridge)
+[DONE]    B6 Proxy Engine (ProxyServer/RequestCapture/RequestModifier)
 [DONE]    B7 Browser Fleet + Role Agents + Browser-use orchestrator
 [DONE]    B8 Security Scanner modules (Api/Auth/Input/Infra/Secrets/Dependency/Db)
 [DONE]    B9 Git Middleware (GitGate + DiffAnalyzer + RemoteForwarder)

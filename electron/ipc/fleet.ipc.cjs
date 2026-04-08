@@ -213,16 +213,6 @@ async function ensureFleetRuntimeContainers(runtime) {
   if (runtime.ContainerManager.ensureScannerRunning) {
     await runtime.ContainerManager.ensureScannerRunning(configWithWs);
   }
-  if (runtime.ContainerManager.ensureZapRunning) {
-    try {
-      await runtime.ContainerManager.ensureZapRunning(configWithWs);
-    } catch (error) {
-      runtime?.wss?.emitLog(
-        `ZAP warmup is still in progress (${String(error?.message || "startup pending")}). Continuing fleet startup without blocking.`,
-        "warn",
-      );
-    }
-  }
 }
 
 async function startFleetWithHeadlessFallback(runtime, payload, getWss) {

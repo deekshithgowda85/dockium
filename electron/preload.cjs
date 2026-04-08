@@ -15,8 +15,8 @@ const listeners = {
   request: new Set(),
   scan_progress: new Set(),
   scan_complete: new Set(),
+  nuclei_progress: new Set(),
   fleet: new Set(),
-  zap_progress: new Set(),
   gate_result: new Set(),
 };
 
@@ -169,6 +169,13 @@ const api = {
     getStatus: () => invoke("scan:getStatus"),
   },
 
+  nuclei: {
+    start: (payload) => invoke("nuclei:start", payload),
+    getStatus: () => invoke("nuclei:getStatus"),
+    getFindings: () => invoke("nuclei:getFindings"),
+    reset: () => invoke("nuclei:reset"),
+  },
+
   git: {
     installHook: (payload) => invoke("git:installHook", payload),
     removeHook: (payload) => invoke("git:removeHook", payload),
@@ -185,13 +192,6 @@ const api = {
     replay: (payload) => invoke("proxy:replay", payload),
     clearRequests: () => invoke("proxy:clearRequests"),
     getStatus: () => invoke("proxy:getStatus"),
-  },
-
-  zap: {
-    start: (payload) => invoke("zap:start", payload),
-    getStatus: () => invoke("zap:getStatus"),
-    getAlerts: () => invoke("zap:getAlerts"),
-    reset: () => invoke("zap:reset"),
   },
 
   fleet: {
@@ -227,8 +227,8 @@ const api = {
     onRequest: (callback) => subscribe("request", callback),
     onScanProgress: (callback) => subscribe("scan_progress", callback),
     onScanComplete: (callback) => subscribe("scan_complete", callback),
+    onNucleiProgress: (callback) => subscribe("nuclei_progress", callback),
     onFleet: (callback) => subscribe("fleet", callback),
-    onZapProgress: (callback) => subscribe("zap_progress", callback),
   },
 
   // Backward-compatible aliases used by existing renderer.

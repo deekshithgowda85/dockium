@@ -4,8 +4,7 @@ class EnvDetector {
       NODE_ENV: 'development',
       DATABASE_URL: `${this.dbUrlForType(frameworkInfo.dbType)}`,
       DOCKIUM_TARGET: `http://localhost:${frameworkInfo.appPort}`,
-      DOCKIUM_PROXY: 'http://localhost:8080',
-      DOCKIUM_ZAP: 'http://localhost:8090'
+      DOCKIUM_PROXY: 'http://localhost:8080'
     }
 
     const envLines = Object.entries(baseEnv).map(([key, value]) => `${key}=${value}`)

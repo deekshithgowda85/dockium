@@ -253,14 +253,14 @@ export default function Onboarding() {
       const dockerStart = window.dockium?.docker?.startAll;
       if (dockerStart && (projectPath || importedImage)) {
         setInitialization({ active: true, message: "Starting Docker containers", needsAi: false });
-        pushLog("> Starting security stack containers (scanner + zap + proxy)...");
+        pushLog("> Starting security stack containers (scanner + proxy)...");
         const started = await dockerStart();
         if (started?.ok === false) {
           throw new Error(started.error || "Container startup failed");
         }
         const startedContainers = Array.isArray(started?.result?.containers)
           ? started.result.containers.join(", ")
-          : "scanner, zap, proxy, app";
+          : "scanner, proxy, app";
         pushLog(`> Started containers: ${startedContainers}`);
         pushLog("> Containers healthy. Ready.");
       } else {
@@ -389,7 +389,7 @@ export default function Onboarding() {
         return;
       }
 
-      if (!/docker|pull|pulled|container|scanner|zap|proxy|healthy|starting/i.test(message)) {
+      if (!/docker|pull|pulled|container|scanner|proxy|healthy|starting/i.test(message)) {
         return;
       }
 

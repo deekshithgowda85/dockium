@@ -27,7 +27,7 @@ const menuActions = {
   View: [
     { label: "Toggle Sidebar", action: "toggleSidebar" },
     { label: "App Map", action: "appMap" },
-    { label: "OWASP ZAP", action: "zap" },
+    { label: "Active Scan", action: "activeScan" },
     { label: "Settings", action: "settings" },
   ],
   Go: [
@@ -62,7 +62,7 @@ const navSections = [
       { path: "/app-map", label: "App Map", icon: "appMap", badge: "12", badgeType: "orange" },
       { path: "/proxy", label: "Proxy", icon: "proxy", badge: "312", badgeType: "gray" },
       { path: "/scanner", label: "Scanner", icon: "scanner", badge: "18", badgeType: "red" },
-      { path: "/zap", label: "OWASP ZAP", icon: "shield", badge: "SEC", badgeType: "orange" },
+      { path: "/active-scan", label: "Active Scan", icon: "shield", badge: "ACT", badgeType: "orange" },
       { path: "/secrets", label: "Secrets", icon: "secrets", badge: "7", badgeType: "red" },
       { path: "/cve-scanner", label: "CVE Scanner", icon: "shield", badge: "3", badgeType: "orange" },
     ],
@@ -345,11 +345,11 @@ export default function Layout() {
       case "scanner":
         navigate("/scanner");
         break;
+      case "activeScan":
+        navigate("/active-scan");
+        break;
       case "appMap":
         navigate("/app-map");
-        break;
-      case "zap":
-        navigate("/zap");
         break;
       case "settings":
         navigate("/settings");

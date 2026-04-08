@@ -136,13 +136,6 @@ export default function Settings() {
                     <option value="Fast">Fast</option>
                   </select>
                 </Row>
-                <Row label="ZAP container port:">
-                  <input
-                    type="number"
-                    value={settings.zapContainerPort}
-                    onChange={(event) => updateSetting("zapContainerPort", Number(event.target.value) || 8090)}
-                  />
-                </Row>
                 <Row label="Payload intensity:">
                   <select
                     value={settings.payloadIntensity}

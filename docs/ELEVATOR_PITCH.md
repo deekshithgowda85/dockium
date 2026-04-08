@@ -33,16 +33,16 @@ Help us scale Dockium so every development team can shift security left—test e
 
 # Key Differentiators vs. Competitors
 
-| Feature                   | Dockium          | OWASP ZAP     | Snyk          | GitHub Advanced Security |
-| ------------------------- | ---------------- | ------------- | ------------- | ------------------------ |
-| Local/Offline             | ✅ Full          | ⚠️ Partial    | ❌ Cloud-only | ❌ Cloud-only            |
-| Cost                      | **Free**         | Free          | From $50/mo   | From $50/mo              |
-| Framework Detection       | ✅ Auto          | ❌ Manual     | ⚠️ Limited    | ❌ Manual                |
-| Multi-Scanner Integration | ✅ 6 modules     | ⚠️ Proxy only | ✅ Multi      | ✅ Multi                 |
-| Codebase Mapping          | ✅ Auto          | ❌ No         | ⚠️ Limited    | ✅ Yes                   |
-| Git Integration           | ✅ Pre-push hook | ❌ No         | ⚠️ Manual     | ⚠️ Manual                |
-| Real-Time Feedback        | ✅ Live scanning | ✅ Yes        | ❌ Reports    | ❌ Reports               |
-| Setup Time                | **2 minutes**    | 15+ minutes   | 5 minutes     | 10 minutes               |
+| Feature                   | Dockium                    | Nuclei CLI         | Snyk          | GitHub Advanced Security |
+| ------------------------- | -------------------------- | ------------------ | ------------- | ------------------------ |
+| Local/Offline             | ✅ Full                    | ✅ CLI local       | ❌ Cloud-only | ❌ Cloud-only            |
+| Cost                      | **Free**                   | Free               | From $50/mo   | From $50/mo              |
+| Framework Detection       | ✅ Auto                    | ❌ Manual          | ⚠️ Limited    | ❌ Manual                |
+| Multi-Scanner Integration | ✅ 7 modules + active scan | ❌ Single scanner  | ✅ Multi      | ✅ Multi                 |
+| Codebase Mapping          | ✅ Auto                    | ❌ No              | ⚠️ Limited    | ✅ Yes                   |
+| Git Integration           | ✅ Pre-push hook           | ❌ No              | ⚠️ Manual     | ⚠️ Manual                |
+| Real-Time Feedback        | ✅ Live scanning           | ⚠️ CLI output only | ❌ Reports    | ❌ Reports               |
+| Setup Time                | **2 minutes**              | 10+ minutes        | 5 minutes     | 10 minutes               |
 
 ---
 
@@ -50,7 +50,7 @@ Help us scale Dockium so every development team can shift security left—test e
 
 - **Development Cost**: 6 months of full-time engineering
 - **Lines of Core Code**: 40,000+
-- **Scanner Modules**: 6 independent
+- **Scanner Modules**: 7 independent (+ dedicated active scan page)
 - **Supported Languages/Frameworks**: 6+ (Node, Python, Ruby, PHP, Java)
 - **Zero External Dependencies**: No cloud backend
 - **Package Size**: ~500 MB installed (includes Docker images)

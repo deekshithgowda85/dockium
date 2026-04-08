@@ -14,7 +14,7 @@ Modern web and mobile applications are increasingly complex, but security testin
   - Security reporting tools
 - **High Friction**: Setting up security testing requires:
   - Complex configuration
-  - External services/backends (OWASP ZAP servers, scanning APIs)
+  - External services/backends (hosted scanners, scanning APIs)
   - Docker/container knowledge
   - Integration between different tools and platforms
 - **Missing Context**: Most security tools don't understand the application structure:
@@ -45,7 +45,7 @@ Modern web and mobile applications are increasingly complex, but security testin
 Dockium **automatically**:
 
 1. **Analyzes** your project structure (detects framework, routes, API endpoints)
-2. **Spins up** containers (scanner, proxy, OWASP ZAP) automatically
+2. **Spins up** containers (scanner, proxy, app) automatically
 3. **Scans** for multiple vulnerability classes:
    - API security issues
    - Authentication/authorization flaws
@@ -102,7 +102,7 @@ Dockium **automatically**:
      ┌─────────┴────────┬────────────┬──────────┐
      │                  │            │          │
   ┌──▼──┐        ┌──────▼───┐    ┌──▼──┐  ┌───▼──┐
-  │APP  │        │SCANNER   │    │ZAP  │  │PROXY │
+  │APP  │        │SCANNER   │    │NUC. │  │PROXY │
   └─────┘        │(Node)    │    │     │  │      │
                  │(Playwright)   │     │  │      │
                  └──────────┘    └─────┘  └──────┘
@@ -121,7 +121,7 @@ Dockium **automatically**:
 - Spins up isolated containers on-demand:
   - **dockium-app**: Your application (built or imported)
   - **dockium-scanner**: Custom Node.js scanner engine
-  - **dockium-zap**: OWASP ZAP proxy for active scanning
+  - **ephemeral nuclei container**: critical/high active template scan
   - **dockium-proxy**: HTTP/HTTPS traffic intercept and modify
 
 #### 3. **Multi-Module Scanner**
@@ -138,7 +138,7 @@ Performs parallel security scans:
 
 - Intercepts all HTTP/HTTPS traffic
 - Captures request/response pairs
-- Feeds into ZAP for active scanning
+- Feeds into active scan workflows for exploit confirmation
 - Records traffic for later analysis
 
 #### 5. **Report Generation**
@@ -178,7 +178,7 @@ Performs parallel security scans:
 - **Fleet Activity**: Browser automation logs
 - **Embedded Preview**: Live screenshots from testing browsers
 
-### Feature 5: Active Scanning (OWASP ZAP)
+### Feature 5: Active Scanning (Nuclei)
 
 - Automated penetration testing of discovered endpoints
 - Attack simulation (SQLi, XSS, CSRF, etc.)
@@ -337,9 +337,9 @@ Instead of "security bottleneck," security becomes an integral part of the devel
 ## 11. QUICK STATISTICS (For Impact)
 
 - **Lines of Code**: 40,000+ (core + modules)
-- **Scanning Modules**: 6 (API, Auth, Secrets, Infra, Dependencies, CVE)
+- **Scanning Modules**: 7 (API, Auth, Input, Secrets, Infra, Dependencies/CVE, Nuclei Active)
 - **Supported Frameworks**: 6+ (Express, Next.js, Django, FastAPI, Rails, Laravel)
-- **Containers Orchestrated**: 4 (App, Scanner, ZAP, Proxy)
+- **Containers Orchestrated**: 3 long-lived (App, Scanner, Proxy) + ephemeral Nuclei scan container
 - **Report Formats**: 3 (PDF, Markdown, JSON)
 - **Setup Time**: 2 minutes (vs. 30+ for traditional tools)
 - **Cloud Dependencies**: 0 (fully offline)

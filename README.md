@@ -112,8 +112,8 @@ Packaging configuration is in [electron-builder.yml](electron-builder.yml).
 ## Docker Runtime Notes
 
 - Docker Runtime panel shows current running containers and a running count.
-- Runtime boot now includes app, proxy, scanner, and ZAP containers (plus optional DB).
-- ZAP image pull uses stable fallback candidates to improve first-run download reliability.
+- Runtime boot now includes app, proxy, and scanner containers (plus optional DB).
+- Active scanning runs through Dockerized Nuclei sessions when triggered from Active Scan.
 - If Docker daemon is unavailable, import/start actions return explicit error messages.
 
 ## Troubleshooting

@@ -16,7 +16,10 @@ class DiffAnalyzer {
 
     const extractor = new RouteExtractor()
     const allRoutes = await extractor.extract(repoPath, frameworkInfo)
-    const newRoutes = allRoutes.filter((route) => changedFiles.some((file) => route.sourceFile?.includes(file)))
+    const newRoutes = allRoutes.filter((route) => {
+      const source = String(route.sourceFile || '').replace(/\\/g, '/')
+      return changedFiles.some((file) => source.includes(String(file || '').replace(/\\/g, '/')))
+    })
 
     const commitSha = (await git.revparse(['HEAD'])).trim()
     const commitMessage = (await git.show(['-s', '--format=%s', 'HEAD'])).trim()

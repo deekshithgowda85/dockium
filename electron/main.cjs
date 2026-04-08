@@ -15,6 +15,7 @@ const { registerFleetIpc } = require("./ipc/fleet.ipc.cjs");
 let mainWindow = null;
 let splashWindow = null;
 let persistentStore = null;
+let projectRestoreInFlight = null;
 
 const runtime = {
   coreRuntimeReady: false,
@@ -26,6 +27,7 @@ const runtime = {
   ScanOrchestrator: null,
   NucleiScanner: null,
   DiscoveryEngine: null,
+  FolderTreeBuilder: null,
   GitHookInstaller: null,
   GitGate: null,
   ProxyEngine: null,
@@ -41,6 +43,10 @@ const runtime = {
   appMap: { folderTree: [], routeTree: [], apiGraph: [], authBoundaries: [] },
   lastScan: null,
   latestReport: null,
+  nucleiState: {
+    status: null,
+    findings: [],
+  },
   pushHistory: [],
   gateRules: {
     blockCritical: true,
@@ -70,6 +76,10 @@ const defaultSettings = {
   maxScanDuration: "5 min",
   reportIncludeEvidence: true,
   reportDefaultFormat: "PDF",
+  reportLlmEnabled: false,
+  reportLlmEndpoint: "",
+  reportLlmModel: "qwen2.5:3b",
+  reportLlmApiKey: "",
   advancedTelemetry: false,
   advancedVerboseIpc: false,
 };
@@ -78,12 +88,16 @@ const defaultOnboardingState = {
   projectLoaded: false,
   projectPath: "",
   importedImage: "",
+  sourceRepoPath: "",
   importedMode: false,
   detection: null,
   config: {
     portOverride: 3000,
     dbTypeOverride: "PostgreSQL",
     useDbContainer: false,
+    sourceRepoPath: "",
+    adminEmail: "",
+    adminPassword: "",
   },
 };
 
@@ -207,6 +221,7 @@ async function bootstrapCoreRuntime() {
     scanMod,
     nucleiScannerMod,
     discoveryMod,
+    folderTreeBuilderMod,
     gitHookMod,
     gitGateMod,
     proxyMod,
@@ -225,6 +240,7 @@ async function bootstrapCoreRuntime() {
     import(coreModulePath("scanner/ScanOrchestrator.js")),
     import(coreModulePath("scanner/modules/NucleiScanner.js")),
     import(coreModulePath("scanner/DiscoveryEngine.js")),
+    import(coreModulePath("mapper/FolderTreeBuilder.js")),
     import(coreModulePath("git/GitHookInstaller.js")),
     import(coreModulePath("git/GitGate.js")),
     import(coreModulePath("proxy/ProxyEngine.js")),
@@ -244,6 +260,7 @@ async function bootstrapCoreRuntime() {
   runtime.ScanOrchestrator = scanMod.default;
   runtime.NucleiScanner = nucleiScannerMod.default;
   runtime.DiscoveryEngine = discoveryMod.default;
+  runtime.FolderTreeBuilder = folderTreeBuilderMod.default;
   runtime.GitHookInstaller = gitHookMod.default;
   runtime.GitGate = gitGateMod.default;
   runtime.ProxyEngine = proxyMod.default;
@@ -288,10 +305,10 @@ function buildProjectConfig(repoPath, frameworkInfo, options = {}) {
       testCommand: frameworkInfo.testCommand || "npm test",
     },
     credentials: {
-      adminEmail: "admin@dockium.local",
-      adminPassword: "Password123!",
-      testUserEmail: "user@dockium.local",
-      testUserPass: "Password123!",
+      adminEmail: String(options.adminEmail || "admin@dockium.local"),
+      adminPassword: String(options.adminPassword || "Password123!"),
+      testUserEmail: String(options.testUserEmail || "user@dockium.local"),
+      testUserPass: String(options.testUserPass || "Password123!"),
     },
     modules: {
       browserFleet: true,
@@ -311,6 +328,707 @@ function buildProjectConfig(repoPath, frameworkInfo, options = {}) {
       allowOverride: false,
     },
   };
+}
+
+async function resolveFetch() {
+  if (typeof fetch === "function") {
+    return fetch;
+  }
+  const mod = await import("node-fetch");
+  return mod.default;
+}
+
+function buildAuthHeadersFromToken(tokenValue = "") {
+  const token = String(tokenValue || "").trim();
+  if (!token) {
+    return {};
+  }
+  if (/^bearer\s+/i.test(token)) {
+    return { Authorization: token };
+  }
+  if (token.includes("=") && token.includes(";")) {
+    return { Cookie: token };
+  }
+  if (token.includes("=") && !token.includes(" ")) {
+    const [key, ...rest] = token.split("=");
+    return { [key.trim()]: rest.join("=").trim() };
+  }
+  return { Authorization: `Bearer ${token}` };
+}
+
+function safeJsonParse(raw) {
+  try {
+    return { ok: true, value: JSON.parse(raw) };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
+function extractTokenFromPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return "";
+  }
+
+  const directCandidates = [
+    payload.token,
+    payload.access_token,
+    payload.accessToken,
+    payload.jwt,
+    payload.id_token,
+    payload.idToken,
+    payload.authToken,
+  ];
+
+  for (const candidate of directCandidates) {
+    const value = String(candidate || "").trim();
+    if (value) {
+      return value;
+    }
+  }
+
+  const nestedCandidates = [
+    payload.data,
+    payload.result,
+    payload.user,
+    payload.authentication,
+  ];
+
+  for (const entry of nestedCandidates) {
+    const nested = extractTokenFromPayload(entry);
+    if (nested) {
+      return nested;
+    }
+  }
+
+  return "";
+}
+
+function getSetCookieValues(response) {
+  try {
+    if (typeof response?.headers?.getSetCookie === "function") {
+      const values = response.headers.getSetCookie();
+      return Array.isArray(values) ? values : [];
+    }
+
+    if (typeof response?.headers?.raw === "function") {
+      const rawHeaders = response.headers.raw();
+      const values = rawHeaders?.["set-cookie"];
+      return Array.isArray(values) ? values : [];
+    }
+
+    const single = response?.headers?.get?.("set-cookie");
+    return single ? [single] : [];
+  } catch {
+    return [];
+  }
+}
+
+function toCookieHeader(cookies = []) {
+  return cookies
+    .map((cookie) => String(cookie || "").split(";")[0].trim())
+    .filter(Boolean)
+    .join("; ");
+}
+
+function normalizeOpenApiRoutes(spec) {
+  const routes = [];
+  if (!spec || typeof spec !== "object") {
+    return routes;
+  }
+
+  const methods = new Set(["get", "post", "put", "patch", "delete", "options", "head"]);
+  Object.entries(spec.paths || {}).forEach(([rawPath, operations]) => {
+    Object.entries(operations || {}).forEach(([method, operation]) => {
+      if (!methods.has(String(method || "").toLowerCase())) {
+        return;
+      }
+
+      const permissions = Array.isArray(operation?.security)
+        ? operation.security.flatMap((entry) => Object.keys(entry || {}))
+        : [];
+
+      routes.push({
+        method: String(method || "get").toUpperCase(),
+        path: String(rawPath || "/").replace(/\{([^}]+)\}/g, ":$1"),
+        authRequired: permissions.length > 0,
+        authStatus: permissions.length > 0 ? "AUTH REQUIRED" : "PUBLIC",
+        sourceFile: "image://openapi",
+        sourceLine: 1,
+        handlerName: String(operation?.operationId || operation?.summary || "openapi-handler"),
+        middlewareChain: [],
+        request: {
+          pathParams: [],
+          queryParams: [],
+          bodySchema: operation?.requestBody?.content?.["application/json"]?.schema || null,
+        },
+        response: {
+          statusCodes: Object.keys(operation?.responses || {}).map((code) => ({ code })),
+          bodySchema: operation?.responses || {},
+          contentType: "application/json",
+        },
+        permissions,
+        roles: [],
+        rateLimit: null,
+        openApi: {
+          summary: operation?.summary || "",
+          tags: operation?.tags || [],
+          operationId: operation?.operationId || "",
+        },
+      });
+    });
+  });
+
+  return routes;
+}
+
+function buildApiGraphFromRoutes(routes = []) {
+  return routes.map((route, index) => ({
+    id: route?.id || `image-flow-${index + 1}`,
+    route: `${route.method} ${route.path}`,
+    method: route.method,
+    path: route.path,
+    requestSchema: route?.request?.bodySchema || {},
+    responseSchema: route?.response?.bodySchema || {},
+    callChain: [
+      `${route.method} ${route.path}`,
+      "container://app",
+      route?.authRequired ? "auth://required" : "auth://public",
+      "response",
+    ],
+  }));
+}
+
+function buildAuthBoundariesFromRoutes(routes = []) {
+  return routes.map((route) => ({
+    path: route.path,
+    requiredRole: route.authRequired ? "user" : "none",
+    requiredPermissions: Array.isArray(route.permissions) ? route.permissions : [],
+    enforcedBy: route.authRequired ? "token/session middleware" : "public",
+    authStatus: route.authStatus || (route.authRequired ? "AUTH REQUIRED" : "PUBLIC"),
+  }));
+}
+
+async function fetchImportedOpenApiRoutes(targetUrl, authToken = "") {
+  const base = String(targetUrl || "").trim().replace(/\/$/, "");
+  if (!base) {
+    return {
+      routes: [],
+      warnings: ["OpenAPI unavailable: target URL is missing."],
+      summary: "OpenAPI unavailable for imported image target.",
+      diagnostics: [
+        {
+          endpoint: "(none)",
+          status: 0,
+          kind: "config",
+          message: "Missing target URL for imported-image OpenAPI fetch.",
+          contentType: "",
+          snippet: "",
+        },
+      ],
+    };
+  }
+
+  const warnings = [];
+  const diagnostics = [];
+  const endpoints = [
+    "/openapi.json",
+    "/swagger.json",
+    "/v3/api-docs",
+    "/api-docs/swagger.json",
+  ];
+
+  const fetchImpl = await resolveFetch();
+  const authHeaders = buildAuthHeadersFromToken(authToken);
+
+  for (const endpoint of endpoints) {
+    const url = `${base}${endpoint}`;
+    try {
+      const response = await fetchImpl(url, {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          ...authHeaders,
+        },
+      });
+
+      const status = Number(response?.status || 0);
+      const contentType = String(response?.headers?.get?.("content-type") || "");
+
+      if (!response.ok) {
+        diagnostics.push({
+          endpoint,
+          status,
+          kind: "http",
+          message: `HTTP ${status}`,
+          contentType,
+          snippet: "",
+        });
+        continue;
+      }
+
+      const text = await response.text();
+      const snippet = String(text || "").trim().slice(0, 160);
+      const looksLikeJson = /json/i.test(contentType)
+        || /^\s*\{/.test(text)
+        || /^\s*\[/.test(text);
+
+      if (!looksLikeJson) {
+        diagnostics.push({
+          endpoint,
+          status,
+          kind: "non-json",
+          message: `Expected JSON but received ${contentType || "unknown"}`,
+          contentType,
+          snippet,
+        });
+        continue;
+      }
+
+      const parsed = safeJsonParse(text);
+      if (!parsed.ok) {
+        diagnostics.push({
+          endpoint,
+          status,
+          kind: "parse",
+          message: String(parsed.error?.message || "JSON parse failed"),
+          contentType,
+          snippet,
+        });
+        continue;
+      }
+
+      const json = parsed.value;
+      const routes = normalizeOpenApiRoutes(json);
+      if (routes.length > 0) {
+        const successSummary = `OpenAPI loaded from ${endpoint}.`;
+        return { routes, warnings, summary: successSummary, diagnostics };
+      }
+
+      diagnostics.push({
+        endpoint,
+        status,
+        kind: "empty",
+        message: "JSON parsed but no OpenAPI paths were discovered.",
+        contentType,
+        snippet,
+      });
+    } catch (error) {
+      diagnostics.push({
+        endpoint,
+        status: 0,
+        kind: "network",
+        message: String(error?.message || "Unknown network error"),
+        contentType: "",
+        snippet: "",
+      });
+    }
+  }
+
+  warnings.push("OpenAPI spec not found on imported image target. Expand debug for endpoint details.");
+  return {
+    routes: [],
+    warnings,
+    summary: "OpenAPI spec was not detected on imported image target.",
+    diagnostics,
+  };
+}
+
+function mergeImportedRoutes(baseRoutes = [], discoveredRoutes = []) {
+  const map = new Map();
+  [...baseRoutes, ...discoveredRoutes].forEach((route, index) => {
+    const method = String(route?.method || "GET").toUpperCase();
+    const pathValue = String(route?.path || "/");
+    const key = `${method} ${pathValue}`;
+    const previous = map.get(key);
+    if (!previous) {
+      map.set(key, {
+        id: route?.id || `route-${index + 1}`,
+        method,
+        path: pathValue,
+        fullPath: pathValue,
+        authRequired: Boolean(route?.authRequired),
+        authStatus: route?.authStatus || (route?.authRequired ? "AUTH REQUIRED" : "PUBLIC"),
+        sourceFile: route?.sourceFile || "image://api",
+        sourceLine: Number(route?.sourceLine || 1),
+        handlerName: route?.handlerName || "anonymous-handler",
+        middlewareChain: Array.isArray(route?.middlewareChain) ? route.middlewareChain : [],
+        request: route?.request || { pathParams: [], queryParams: [], bodySchema: {} },
+        response: route?.response || { statusCodes: [{ code: 200 }], bodySchema: {}, contentType: "application/json" },
+        roles: Array.isArray(route?.roles) ? route.roles : [],
+        permissions: Array.isArray(route?.permissions) ? route.permissions : [],
+        rateLimit: route?.rateLimit || null,
+        openApi: route?.openApi || null,
+      });
+      return;
+    }
+
+    previous.authRequired = previous.authRequired || Boolean(route?.authRequired);
+    previous.authStatus = previous.authRequired ? "AUTH REQUIRED" : "PUBLIC";
+    previous.permissions = [...new Set([...(previous.permissions || []), ...((route?.permissions) || [])])];
+    previous.openApi = route?.openApi || previous.openApi;
+    previous.request = route?.request?.bodySchema ? route.request : previous.request;
+    previous.response = route?.response?.bodySchema ? route.response : previous.response;
+    map.set(key, previous);
+  });
+
+  return [...map.values()].sort((a, b) => {
+    const pathCmp = String(a.path).localeCompare(String(b.path));
+    if (pathCmp !== 0) {
+      return pathCmp;
+    }
+    return String(a.method).localeCompare(String(b.method));
+  });
+}
+
+function buildLoginPayloadCandidates(credentials = {}) {
+  const email = String(credentials?.adminEmail || credentials?.testUserEmail || "").trim();
+  const password = String(credentials?.adminPassword || credentials?.testUserPass || "").trim();
+  if (!email || !password) {
+    return [];
+  }
+
+  return [
+    { email, password },
+    { username: email, password },
+    { user: email, password },
+    { identifier: email, password },
+    { login: email, password },
+    { credentials: { email, password } },
+  ];
+}
+
+function isLikelyLoginRoute(route) {
+  const method = String(route?.method || "GET").toUpperCase();
+  const routePath = String(route?.path || "").toLowerCase();
+  if (method !== "POST") {
+    return false;
+  }
+
+  return /(login|signin|auth|session|token)/i.test(routePath);
+}
+
+async function attemptAutoLoginForImportedRoutes(routes = [], targetUrl = "", credentials = {}) {
+  const base = String(targetUrl || "").trim().replace(/\/$/, "");
+  if (!base) {
+    return {
+      ok: false,
+      token: "",
+      source: "none",
+      endpoint: "",
+      message: "Missing target URL for automatic authentication.",
+    };
+  }
+
+  const candidates = routes.filter((route) => isLikelyLoginRoute(route));
+  const payloads = buildLoginPayloadCandidates(credentials);
+  if (!candidates.length || !payloads.length) {
+    return {
+      ok: false,
+      token: "",
+      source: "none",
+      endpoint: "",
+      message: "No login endpoint or credentials available for automatic authentication.",
+    };
+  }
+
+  const fetchImpl = await resolveFetch();
+  for (const route of candidates) {
+    const loginPath = String(route?.path || "/").replace(/:([A-Za-z0-9_]+)/g, "1");
+    const loginUrl = `${base}${loginPath.startsWith("/") ? loginPath : `/${loginPath}`}`;
+
+    for (const body of payloads) {
+      try {
+        const response = await fetchImpl(loginUrl, {
+          method: "POST",
+          headers: {
+            Accept: "application/json, text/plain;q=0.8, */*;q=0.5",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+        });
+
+        const status = Number(response?.status || 0);
+        const text = await response.text();
+        const parsed = safeJsonParse(text);
+        const fromBody = parsed.ok ? extractTokenFromPayload(parsed.value) : "";
+        if (fromBody) {
+          return {
+            ok: true,
+            token: fromBody,
+            source: "auto-login-token",
+            endpoint: loginPath,
+            message: `Token obtained from ${loginPath} (HTTP ${status}).`,
+          };
+        }
+
+        const cookieHeader = toCookieHeader(getSetCookieValues(response));
+        if (cookieHeader) {
+          return {
+            ok: true,
+            token: cookieHeader,
+            source: "auto-login-cookie",
+            endpoint: loginPath,
+            message: `Session cookie obtained from ${loginPath} (HTTP ${status}).`,
+          };
+        }
+      } catch {
+        // Try next payload/route candidate.
+      }
+    }
+  }
+
+  return {
+    ok: false,
+    token: "",
+    source: "none",
+    endpoint: "",
+    message: "Automatic login failed for discovered auth endpoints.",
+  };
+}
+
+async function probeImportedRoutesWithAuth(routes = [], targetUrl = "", tokenValue = "") {
+  const token = String(tokenValue || "").trim();
+  if (!token) {
+    return routes.map((route) => ({
+      ...route,
+      authStatus: route.authRequired ? "AUTH REQUIRED" : "PUBLIC",
+      authLive: false,
+      authFailed: false,
+    }));
+  }
+
+  const base = String(targetUrl || "").trim().replace(/\/$/, "");
+  if (!base) {
+    return routes;
+  }
+
+  const fetchImpl = await resolveFetch();
+  const authHeaders = buildAuthHeadersFromToken(token);
+
+  const tested = await Promise.all(routes.map(async (route) => {
+    if (!route?.authRequired) {
+      return {
+        ...route,
+        authStatus: "PUBLIC",
+        authLive: false,
+        authFailed: false,
+      };
+    }
+
+    const method = String(route?.method || "GET").toUpperCase();
+    const rawPath = String(route?.path || "/").replace(/:([A-Za-z0-9_]+)/g, "1");
+    const url = `${base}${rawPath.startsWith("/") ? rawPath : `/${rawPath}`}`;
+
+    try {
+      const response = await fetchImpl(url, {
+        method,
+        headers: {
+          Accept: "application/json, text/plain;q=0.8, */*;q=0.5",
+          ...authHeaders,
+        },
+      });
+
+      const text = await response.text();
+      const failed = response.status === 401 || response.status === 403;
+      return {
+        ...route,
+        authStatus: failed ? "AUTH FAILED" : "AUTHED + LIVE DATA",
+        authLive: !failed,
+        authFailed: failed,
+        liveRequest: {
+          url,
+          method,
+          headers: authHeaders,
+          body: null,
+        },
+        liveResponse: {
+          statusCode: response.status,
+          contentType: response.headers.get("content-type") || "unknown",
+          bodyPreview: String(text || "").slice(0, 3000),
+        },
+      };
+    } catch (error) {
+      return {
+        ...route,
+        authStatus: "AUTH FAILED",
+        authLive: false,
+        authFailed: true,
+        liveRequest: {
+          url,
+          method,
+          headers: authHeaders,
+          body: null,
+        },
+        liveResponse: {
+          statusCode: 0,
+          contentType: "unknown",
+          bodyPreview: String(error?.message || "Request failed"),
+        },
+      };
+    }
+  }));
+
+  return tested;
+}
+
+async function buildLinkedSourceTree(sourceRepoPath, routes = []) {
+  const rawPath = String(sourceRepoPath || "").trim();
+  if (!rawPath) {
+    return null;
+  }
+
+  try {
+    const normalizedPath = await normalizeProjectPath(rawPath);
+    const stats = await fs.stat(normalizedPath);
+    if (!stats.isDirectory()) {
+      return null;
+    }
+
+    const builder = runtime.FolderTreeBuilder ? new runtime.FolderTreeBuilder() : null;
+    if (!builder || typeof builder.build !== "function") {
+      return null;
+    }
+
+    const built = await builder.build(normalizedPath, { routes });
+    return {
+      folderTree: built || null,
+      packageGroups: Array.isArray(built?.packageGroups) ? built.packageGroups : [],
+      sourceRepoPath: normalizedPath,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function enrichImportedImageMap(baseMap, targetUrl, authToken = "", options = {}) {
+  const openApi = await fetchImportedOpenApiRoutes(targetUrl, authToken);
+  const mergedRouteTree = mergeImportedRoutes(baseMap?.routeTree || [], openApi.routes || []);
+  const providedToken = String(authToken || "").trim();
+
+  let resolvedToken = providedToken;
+  let authInfo = {
+    mode: providedToken ? "manual-token" : "none",
+    source: providedToken ? "manual" : "none",
+    success: Boolean(providedToken),
+    endpoint: "",
+    message: providedToken
+      ? "Manual authentication token applied."
+      : "No authentication token provided.",
+  };
+
+  if (!resolvedToken && options?.autoAuth) {
+    const autoResult = await attemptAutoLoginForImportedRoutes(
+      mergedRouteTree,
+      targetUrl,
+      options?.credentials || {}
+    );
+    if (autoResult.ok) {
+      resolvedToken = autoResult.token;
+      authInfo = {
+        mode: "auto-login",
+        source: autoResult.source,
+        success: true,
+        endpoint: autoResult.endpoint,
+        message: autoResult.message,
+      };
+    } else {
+      authInfo = {
+        mode: "auto-login",
+        source: "none",
+        success: false,
+        endpoint: "",
+        message: autoResult.message,
+      };
+    }
+  }
+
+  const authAwareRoutes = await probeImportedRoutesWithAuth(mergedRouteTree, targetUrl, resolvedToken);
+  const linkedSource = await buildLinkedSourceTree(options?.sourceRepoPath, authAwareRoutes);
+  const sourceMode = linkedSource?.folderTree ? "image-linked-source" : "image";
+  const warnings = [
+    ...(Array.isArray(baseMap?.warnings) ? baseMap.warnings : []),
+    ...(Array.isArray(openApi.warnings) ? openApi.warnings : []),
+  ];
+  if (sourceMode === "image") {
+    warnings.unshift("Imported image mode: source folder not linked. Attach source to view real project files.");
+  }
+
+  return {
+    ...baseMap,
+    sourceMode,
+    folderTree: linkedSource?.folderTree || baseMap?.folderTree,
+    routeTree: authAwareRoutes,
+    apiGraph: buildApiGraphFromRoutes(authAwareRoutes),
+    authBoundaries: buildAuthBoundariesFromRoutes(authAwareRoutes),
+    packageGroups: linkedSource?.packageGroups || (baseMap?.packageGroups || []),
+    warnings,
+    openApiSummary: String(openApi.summary || ""),
+    openApiDiagnostics: Array.isArray(openApi.diagnostics) ? openApi.diagnostics : [],
+    authInfo,
+    linkedSourcePath: linkedSource?.sourceRepoPath || "",
+    scannedAt: new Date().toISOString(),
+  };
+}
+
+async function testImportedRoute(route, options = {}) {
+  const targetUrl = String(options?.targetUrl || "").trim().replace(/\/$/, "");
+  if (!targetUrl) {
+    return {
+      ok: false,
+      error: "Missing target URL for imported image route test",
+      code: 400,
+      detail: "targetUrl is required",
+    };
+  }
+
+  const method = String(options?.method || route?.method || "GET").toUpperCase();
+  const rawPath = String(route?.path || "/").replace(/:([A-Za-z0-9_]+)/g, "1");
+  const url = `${targetUrl}${rawPath.startsWith("/") ? rawPath : `/${rawPath}`}`;
+  const body = options?.body;
+  const authHeaders = options?.authHeaders && typeof options.authHeaders === "object"
+    ? options.authHeaders
+    : {};
+  const headers = {
+    Accept: "application/json, text/plain;q=0.8, */*;q=0.5",
+    ...(options?.headers || {}),
+    ...authHeaders,
+  };
+
+  const fetchImpl = await resolveFetch();
+  try {
+    const response = await fetchImpl(url, {
+      method,
+      headers,
+      body: ["POST", "PUT", "PATCH"].includes(method) ? JSON.stringify(body || {}) : undefined,
+    });
+
+    const text = await response.text();
+    return {
+      ok: true,
+      route: {
+        ...route,
+        authStatus: response.status === 401 || response.status === 403 ? "AUTH FAILED" : "AUTHED + LIVE DATA",
+        liveRequest: {
+          url,
+          method,
+          headers,
+          body: body || null,
+        },
+        liveResponse: {
+          statusCode: response.status,
+          contentType: response.headers.get("content-type") || "unknown",
+          bodyPreview: String(text || "").slice(0, 3000),
+        },
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: String(error?.message || "Imported route test failed"),
+      code: 500,
+      detail: "request execution failed",
+    };
+  }
 }
 
 function buildImportedImageMap(imageRef) {
@@ -396,7 +1114,26 @@ function buildImportedImageMap(imageRef) {
     ],
   };
 
-  return { folderTree, routeTree, apiGraph, authBoundaries };
+  return {
+    sourceMode: "image",
+    folderTree,
+    routeTree,
+    apiGraph,
+    authBoundaries,
+    packageGroups: [],
+    warnings: ["Imported image mode: full source tree is unavailable unless a repository is mounted."],
+    openApiSummary: "",
+    openApiDiagnostics: [],
+    authInfo: {
+      mode: "none",
+      source: "none",
+      success: false,
+      endpoint: "",
+      message: "No authentication token provided.",
+    },
+    linkedSourcePath: "",
+    scannedAt: new Date().toISOString(),
+  };
 }
 
 async function hydrateImportedImageProject(imageRef, options = {}) {
@@ -415,6 +1152,11 @@ async function hydrateImportedImageProject(imageRef, options = {}) {
     : dbTypeOverride.includes("sqlite")
       ? "sqlite"
       : "postgres";
+  const sourceRepoPath = String(options.sourceRepoPath || "").trim();
+  const adminEmail = String(options.adminEmail || "admin@dockium.local");
+  const adminPassword = String(options.adminPassword || "Password123!");
+  const testUserEmail = String(options.testUserEmail || "user@dockium.local");
+  const testUserPass = String(options.testUserPass || "Password123!");
 
   runtime.projectConfig = {
     project: {
@@ -431,12 +1173,13 @@ async function hydrateImportedImageProject(imageRef, options = {}) {
       targetUrl: `http://localhost:${appPort}`,
       testCommand: "",
       importedImage: normalized,
+      sourceRepoPath,
     },
     credentials: {
-      adminEmail: "admin@dockium.local",
-      adminPassword: "Password123!",
-      testUserEmail: "user@dockium.local",
-      testUserPass: "Password123!",
+      adminEmail,
+      adminPassword,
+      testUserEmail,
+      testUserPass,
     },
     modules: {
       browserFleet: true,
@@ -458,7 +1201,17 @@ async function hydrateImportedImageProject(imageRef, options = {}) {
   };
 
   runtime.projectPath = `docker://${normalized}`;
-  runtime.appMap = buildImportedImageMap(normalized);
+  const baseImportedMap = buildImportedImageMap(normalized);
+  runtime.appMap = await enrichImportedImageMap(
+    baseImportedMap,
+    runtime.projectConfig.project.targetUrl,
+    "",
+    {
+      sourceRepoPath,
+      autoAuth: true,
+      credentials: runtime.projectConfig.credentials,
+    }
+  );
   runtime.projectInfo = {
     name: normalized,
     projectPath: runtime.projectPath,
@@ -470,6 +1223,7 @@ async function hydrateImportedImageProject(imageRef, options = {}) {
     routeMapSource: "container image introspection",
     routeCount: runtime.appMap.routeTree.length,
     apiFlowCount: runtime.appMap.apiGraph.length,
+    linkedSourcePath: runtime.appMap.linkedSourcePath || sourceRepoPath,
   };
 
   runtime.wss?.emitLog(`Imported image project hydrated: ${normalized}`);
@@ -524,6 +1278,12 @@ async function openProject(projectPath, options = {}) {
   let folderTree = { name: path.basename(normalizedPath), type: "directory", children: [] };
   let apiGraph = [];
   let authBoundaries = [];
+  let appMapWarnings = [];
+  let packageGroups = [];
+  let openApiInfo = { title: "", version: "" };
+  let openApiSummary = "";
+  let openApiDiagnostics = [];
+  let authInfo = null;
 
   if (options.runIngestion) {
     const ingestion = new runtime.Ingestion(runtime.ContainerManager, runtime.wss);
@@ -534,14 +1294,32 @@ async function openProject(projectPath, options = {}) {
     authBoundaries = Array.isArray(ingested.appMap.authBoundaries)
       ? ingested.appMap.authBoundaries
       : [];
+    appMapWarnings = Array.isArray(ingested.appMap.warnings) ? ingested.appMap.warnings : [];
+    packageGroups = Array.isArray(ingested.appMap.packageGroups) ? ingested.appMap.packageGroups : [];
+    openApiInfo = ingested.appMap.openApiInfo || openApiInfo;
+    openApiSummary = String(ingested.appMap.openApiSummary || "");
+    openApiDiagnostics = Array.isArray(ingested.appMap.openApiDiagnostics)
+      ? ingested.appMap.openApiDiagnostics
+      : [];
+    authInfo = ingested.appMap.authInfo || null;
   } else {
     const discovery = new runtime.DiscoveryEngine(config, normalizedPath);
-    [routeTree, folderTree, apiGraph] = await Promise.all([
-      discovery.discoverRoutes(),
-      discovery.discoverFileTree(),
-      discovery.discoverApiGraph([]),
-    ]);
-    authBoundaries = await discovery.discoverAuthBoundaries(routeTree, []);
+    const appMap = await discovery.scanAppMap({
+      targetUrl: config.project.targetUrl,
+      authToken: String(options.authToken || ""),
+      autoAuth: true,
+      credentials: config.credentials,
+    });
+    routeTree = Array.isArray(appMap.routeTree) ? appMap.routeTree : [];
+    folderTree = appMap.folderTree || folderTree;
+    apiGraph = Array.isArray(appMap.apiGraph) ? appMap.apiGraph : [];
+    authBoundaries = Array.isArray(appMap.authBoundaries) ? appMap.authBoundaries : [];
+    appMapWarnings = Array.isArray(appMap.warnings) ? appMap.warnings : [];
+    packageGroups = Array.isArray(appMap.packageGroups) ? appMap.packageGroups : [];
+    openApiInfo = appMap.openApiInfo || openApiInfo;
+    openApiSummary = String(appMap.openApiSummary || "");
+    openApiDiagnostics = Array.isArray(appMap.openApiDiagnostics) ? appMap.openApiDiagnostics : [];
+    authInfo = appMap.authInfo || null;
   }
 
   runtime.projectPath = normalizedPath;
@@ -551,6 +1329,13 @@ async function openProject(projectPath, options = {}) {
     routeTree,
     apiGraph,
     authBoundaries,
+    warnings: appMapWarnings,
+    packageGroups,
+    openApiInfo,
+    openApiSummary,
+    openApiDiagnostics,
+    authInfo,
+    scannedAt: new Date().toISOString(),
   };
 
   runtime.projectInfo = {
@@ -561,7 +1346,7 @@ async function openProject(projectPath, options = {}) {
     targetUrl: config.project.targetUrl,
     dbType: config.project.dbType,
     schemaPath: "prisma/schema.prisma",
-    routeMapSource: "src/**",
+    routeMapSource: "runtime router registry",
     routeCount: routeTree.length,
     apiFlowCount: apiGraph.length,
   };
@@ -584,6 +1369,294 @@ function defaultExportName(extension) {
     String(now.getDate()).padStart(2, "0"),
   ].join("-");
   return `dockium-report-${stamp}.${extension}`;
+}
+
+function summarizeBySeverity(findings = []) {
+  const summary = { total: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+  for (const finding of findings) {
+    const severity = String(finding?.severity || "info").toLowerCase();
+    summary.total += 1;
+    if (summary[severity] !== undefined) {
+      summary[severity] += 1;
+    } else {
+      summary.info += 1;
+    }
+  }
+  return summary;
+}
+
+function normalizeFindingRecord(finding, source, index) {
+  return {
+    id: String(finding?.id || `${source}-${index + 1}`),
+    source,
+    severity: String(finding?.severity || "info").toLowerCase(),
+    title: String(finding?.title || finding?.name || "Untitled finding"),
+    endpoint: String(finding?.endpoint || finding?.url || "unknown"),
+    description: String(finding?.description || finding?.what || ""),
+    fix: String(finding?.fix || finding?.solution || ""),
+  };
+}
+
+function clipText(value, maxLength = 220) {
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    return "";
+  }
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(1, maxLength - 3))}...`;
+}
+
+function buildSummaryPrompt(context, extraPrompt = "") {
+  const topFindings = (context?.findings || []).slice(0, 12).map((finding) => ({
+    severity: finding.severity,
+    source: finding.source,
+    title: finding.title,
+    endpoint: finding.endpoint,
+    description: finding.description,
+    fix: finding.fix,
+  }));
+
+  const payload = {
+    project: {
+      name: context?.project?.name || "unknown",
+      framework: context?.project?.framework || "unknown",
+      targetUrl: context?.project?.targetUrl || "",
+    },
+    summary: context?.summary || {},
+    modules: {
+      appMap: {
+        routeCount: context?.appMap?.routeCount || 0,
+        warningCount: Array.isArray(context?.appMap?.warnings) ? context.appMap.warnings.length : 0,
+      },
+      nuclei: {
+        findings: context?.nuclei?.findingsCount || 0,
+        status: context?.nuclei?.status?.phaseName || "idle",
+        lastError: context?.nuclei?.status?.lastError || "",
+      },
+      proxy: {
+        requestCount: context?.proxy?.requestCount || 0,
+      },
+      gitGate: {
+        blockCritical: Boolean(context?.git?.gateRules?.blockCritical),
+        blockHigh: Boolean(context?.git?.gateRules?.blockHigh),
+        blockSecrets: Boolean(context?.git?.gateRules?.blockSecrets),
+      },
+    },
+    topFindings,
+  };
+
+  return [
+    "You are a senior application security reviewer.",
+    "Generate a concise report summary for developers.",
+    "Format:",
+    "1) Executive Summary (3-5 bullet points)",
+    "2) Highest Risks (ordered by severity)",
+    "3) Immediate Fix Plan (5 actionable steps)",
+    "4) Validation Checklist",
+    "Keep it practical and evidence-based. Do not fabricate data.",
+    extraPrompt ? `Additional instruction: ${extraPrompt}` : "",
+    "Context JSON:",
+    JSON.stringify(payload, null, 2),
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+async function buildReportContext() {
+  const project = runtime.projectInfo || {};
+  const appMap = runtime.appMap || {};
+  const scan = runtime.lastScan || {};
+  const nuclei = runtime.nucleiState || { status: null, findings: [] };
+
+  const latestReportFindings = Array.isArray(runtime.latestReport?.findings)
+    ? runtime.latestReport.findings
+    : [];
+  const scanFindings = Array.isArray(scan?.findings) ? scan.findings : [];
+  const nucleiFindings = Array.isArray(nuclei?.findings) ? nuclei.findings : [];
+
+  const findings = [
+    ...scanFindings.map((item, index) => normalizeFindingRecord(item, "scan", index)),
+    ...nucleiFindings.map((item, index) => normalizeFindingRecord(item, "nuclei", index)),
+    ...latestReportFindings.map((item, index) => normalizeFindingRecord(item, "report", index)),
+  ];
+
+  const summary = summarizeBySeverity(findings);
+
+  let proxyStatus = { running: false, requestCount: 0, port: 8080 };
+  let proxyRequests = [];
+  if (runtime.proxyEngine) {
+    try {
+      proxyStatus = runtime.proxyEngine.getStatus();
+      proxyRequests = runtime.proxyEngine.getRequests().slice(-25);
+    } catch {}
+  }
+
+  let containers = [];
+  if (runtime.ContainerManager?.getStatus) {
+    try {
+      containers = await runtime.ContainerManager.getStatus();
+    } catch {}
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    project: {
+      name: String(project?.name || ""),
+      framework: String(project?.framework || ""),
+      targetUrl: String(project?.targetUrl || ""),
+      projectPath: String(project?.projectPath || ""),
+    },
+    appMap: {
+      routeCount: Array.isArray(appMap?.routeTree) ? appMap.routeTree.length : 0,
+      folderTree: appMap?.folderTree || null,
+      routes: Array.isArray(appMap?.routeTree) ? appMap.routeTree.slice(0, 80) : [],
+      warnings: Array.isArray(appMap?.warnings) ? appMap.warnings : [],
+      openApiSummary: String(appMap?.openApiSummary || ""),
+      sourceMode: String(appMap?.sourceMode || "repo"),
+      linkedSourcePath: String(appMap?.linkedSourcePath || ""),
+    },
+    scan: {
+      mode: String(scan?.mode || ""),
+      durationMs: Number(scan?.durationMs || 0),
+      completedAt: String(scan?.completedAt || ""),
+      findingsCount: scanFindings.length,
+      summary: scan?.summary || summarizeBySeverity(scanFindings),
+    },
+    nuclei: {
+      status: nuclei?.status || null,
+      findingsCount: nucleiFindings.length,
+      findings: nucleiFindings,
+    },
+    proxy: {
+      status: proxyStatus,
+      requestCount: proxyRequests.length,
+      recentRequests: proxyRequests,
+    },
+    git: {
+      gateRules: runtime.gateRules || {},
+      pushHistory: Array.isArray(runtime.pushHistory) ? runtime.pushHistory.slice(0, 20) : [],
+    },
+    docker: {
+      containers,
+    },
+    findings,
+    summary,
+    latestReport: runtime.latestReport || null,
+  };
+}
+
+async function generateLlmSummary(payload = {}) {
+  const settings = {
+    ...defaultSettings,
+    ...(getStore().get("settings") || {}),
+  };
+
+  if (!settings.reportLlmEnabled) {
+    return {
+      ok: false,
+      error: "AI summary is disabled in Settings > Report",
+      code: 400,
+      detail: "Enable reportLlmEnabled before generating summary",
+    };
+  }
+
+  const endpoint = String(settings.reportLlmEndpoint || "").trim();
+  const model = String(settings.reportLlmModel || "").trim();
+  if (!endpoint || !model) {
+    return {
+      ok: false,
+      error: "Missing LLM endpoint or model",
+      code: 400,
+      detail: "Configure reportLlmEndpoint and reportLlmModel in Settings > Report",
+    };
+  }
+
+  let context;
+  try {
+    context = await buildReportContext();
+  } catch (error) {
+    return {
+      ok: false,
+      error: "Failed to collect report context",
+      code: 500,
+      detail: String(error?.message || "buildReportContext failed"),
+    };
+  }
+
+  const prompt = buildSummaryPrompt(context, String(payload?.extraPrompt || "").trim());
+  const headers = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    "ngrok-skip-browser-warning": "true",
+    "User-Agent": "Dockium-Desktop/1.0",
+  };
+
+  const apiKey = String(settings.reportLlmApiKey || "").trim();
+  if (apiKey) {
+    headers.Authorization = /^bearer\s+/i.test(apiKey) ? apiKey : `Bearer ${apiKey}`;
+  }
+
+  try {
+    const fetchImpl = await resolveFetch();
+    const response = await fetchImpl(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model,
+        prompt,
+        stream: false,
+      }),
+    });
+
+    const raw = await response.text();
+    const parsed = safeJsonParse(raw);
+    const summary = parsed.ok
+      ? String(
+        parsed.value?.response
+        || parsed.value?.message?.content
+        || parsed.value?.output
+        || ""
+      ).trim()
+      : "";
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        error: `LLM request failed with HTTP ${response.status}`,
+        code: response.status,
+        detail: clipText(raw, 500),
+      };
+    }
+
+    if (!summary) {
+      return {
+        ok: false,
+        error: "LLM response did not include a summary",
+        code: 502,
+        detail: clipText(raw, 500),
+      };
+    }
+
+    return {
+      ok: true,
+      summary,
+      meta: {
+        model,
+        endpoint,
+        generatedAt: new Date().toISOString(),
+        totalFindings: Number(context?.summary?.total || 0),
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: "LLM request failed",
+      code: 500,
+      detail: String(error?.message || "Network or parsing failure"),
+    };
+  }
 }
 
 function registerCoreIpcHandlers() {
@@ -625,16 +1698,77 @@ function registerCoreIpcHandlers() {
   registerNucleiIpc(ipcMain, {
     getProjectConfig: () => runtime.projectConfig,
     createNucleiScanner: (config) => new runtime.NucleiScanner(config),
-    ensureNucleiRuntime: async (config) => {
+    ensureNucleiRuntime: async (config, options = {}) => {
+      const preflight = {
+        app: {
+          ready: false,
+          message: "",
+        },
+        scanner: {
+          created: false,
+          recreated: false,
+          healthy: false,
+          reason: "",
+          status: "unknown",
+        },
+      };
+
       if (runtime.ContainerManager?.ensureAppRunning) {
         await runtime.ContainerManager.ensureAppRunning({ ...config, wss: runtime.wss });
+        preflight.app.ready = true;
+        preflight.app.message = "App runtime is available";
       }
 
       if (runtime.ContainerManager?.ensureScannerRunning) {
-        await runtime.ContainerManager.ensureScannerRunning({ ...config, wss: runtime.wss });
+        const scannerOutcome = await runtime.ContainerManager.ensureScannerRunning(
+          { ...config, wss: runtime.wss },
+          { forceRecreate: Boolean(options?.forceScannerRecreate) }
+        );
+
+        preflight.scanner = {
+          created: Boolean(scannerOutcome?.created),
+          recreated: Boolean(scannerOutcome?.recreated),
+          healthy: Boolean(scannerOutcome?.healthy),
+          reason: String(scannerOutcome?.reason || ""),
+          status: String(scannerOutcome?.status || "unknown"),
+        };
+
+        if (!preflight.scanner.healthy) {
+          runtime.wss?.emitLog(
+            `Scanner preflight unhealthy (${preflight.scanner.reason || "unknown"}); recreating scanner container...`,
+            "warn"
+          );
+
+          const recovered = await runtime.ContainerManager.ensureScannerRunning(
+            { ...config, wss: runtime.wss },
+            { forceRecreate: true }
+          );
+
+          preflight.scanner = {
+            created: Boolean(recovered?.created),
+            recreated: true,
+            healthy: Boolean(recovered?.healthy),
+            reason: String(recovered?.reason || preflight.scanner.reason || ""),
+            status: String(recovered?.status || "unknown"),
+          };
+        }
+
+        if (!preflight.scanner.healthy) {
+          throw new Error(
+            `Scanner container is not healthy after auto-recovery: ${preflight.scanner.reason || "unknown reason"}`
+          );
+        }
       }
+
+      return preflight;
     },
     getWss: () => runtime.wss,
+    onStateUpdate: (snapshot) => {
+      runtime.nucleiState = {
+        status: snapshot?.status || null,
+        findings: Array.isArray(snapshot?.findings) ? snapshot.findings : [],
+      };
+    },
   });
 
   registerGitIpc(ipcMain, {
@@ -674,6 +1808,87 @@ function registerCoreIpcHandlers() {
     openImportedImage: hydrateImportedImageProject,
     getProjectInfo: () => runtime.projectInfo,
     getAppMap: () => runtime.appMap,
+    getProjectConfig: () => runtime.projectConfig,
+    getProjectPath: () => runtime.projectPath,
+    scanAppMap: async (payload = {}) => {
+      if (!runtime.projectConfig || !runtime.projectPath) {
+        return runtime.appMap || {
+          folderTree: { name: "project", type: "directory", children: [] },
+          routeTree: [],
+          apiGraph: [],
+          authBoundaries: [],
+          warnings: ["App-map scan is unavailable for this project context"],
+        };
+      }
+
+      if (String(runtime.projectPath).startsWith("docker://")) {
+        const enriched = await enrichImportedImageMap(
+          runtime.appMap || buildImportedImageMap(runtime.projectConfig?.project?.name || "imported-image"),
+          runtime.projectConfig?.project?.targetUrl,
+          String(payload?.authToken || ""),
+          {
+            autoAuth: true,
+            credentials: runtime.projectConfig?.credentials || {},
+            sourceRepoPath: String(
+              payload?.sourceRepoPath
+              || runtime.projectConfig?.project?.sourceRepoPath
+              || ""
+            ),
+          }
+        );
+        runtime.appMap = enriched;
+        return enriched;
+      }
+
+      const discovery = new runtime.DiscoveryEngine(runtime.projectConfig, runtime.projectPath);
+      const scanned = await discovery.scanAppMap({
+        targetUrl: runtime.projectConfig?.project?.targetUrl,
+        authToken: payload?.authToken,
+        autoAuth: true,
+        credentials: runtime.projectConfig?.credentials || {},
+        onProgress: payload?.onProgress,
+      });
+      return scanned;
+    },
+    setAppMap: (nextMap) => {
+      runtime.appMap = nextMap;
+      runtime.projectInfo = {
+        ...(runtime.projectInfo || {}),
+        routeCount: Array.isArray(nextMap?.routeTree) ? nextMap.routeTree.length : 0,
+        apiFlowCount: Array.isArray(nextMap?.apiGraph) ? nextMap.apiGraph.length : 0,
+        linkedSourcePath: String(nextMap?.linkedSourcePath || runtime.projectInfo?.linkedSourcePath || ""),
+      };
+    },
+    testRoute: async (route, options = {}) => {
+      if (!runtime.projectConfig || !runtime.projectPath) {
+        return {
+          ok: false,
+          error: "Route testing unavailable",
+          code: 400,
+          detail: "Missing project configuration",
+        };
+      }
+
+      if (String(runtime.projectPath).startsWith("docker://")) {
+        return await testImportedRoute(route, {
+          targetUrl: runtime.projectConfig?.project?.targetUrl,
+          authHeaders: options?.authHeaders || {},
+          headers: options?.headers || {},
+          body: options?.body,
+          method: options?.method || route?.method,
+        });
+      }
+
+      const discovery = new runtime.DiscoveryEngine(runtime.projectConfig, runtime.projectPath);
+      return await discovery.testRoute(route, {
+        targetUrl: runtime.projectConfig?.project?.targetUrl,
+        authHeaders: options?.authHeaders || {},
+        headers: options?.headers || {},
+        body: options?.body,
+        params: options?.params || [],
+        method: options?.method || route?.method,
+      });
+    },
   });
 
   registerFleetIpc(ipcMain, {
@@ -683,6 +1898,8 @@ function registerCoreIpcHandlers() {
 
   registerReportIpc(ipcMain, BrowserWindow, dialog, {
     getLatestReport: () => runtime.latestReport,
+    getReportContext: buildReportContext,
+    generateLlmSummary: generateLlmSummary,
     exporters: {
       pdf: runtime.PdfExporter,
       markdown: runtime.MarkdownExporter,
@@ -774,23 +1991,12 @@ function registerCoreIpcHandlers() {
       },
     };
 
-    if (statePayload.projectLoaded) {
-      try {
-        const importedMode = Boolean(statePayload.importedMode)
-          || String(statePayload.projectPath || "").startsWith("docker://")
-          || Boolean(statePayload.importedImage);
+    store.set("onboarding", next);
 
-        if (importedMode && statePayload.importedImage) {
-          await hydrateImportedImageProject(statePayload.importedImage, statePayload.config || {});
-        } else if (statePayload.projectPath) {
-          await openProject(statePayload.projectPath, statePayload.config || {});
-        }
-      } catch (error) {
-        runtime.wss?.emitLog(`Project load warning: ${error.message}`, "warn");
-      }
+    if (statePayload.projectLoaded && !statePayload.deferProjectOpen) {
+      queueProjectRestore("onboarding:set-state");
     }
 
-    store.set("onboarding", next);
     return next;
   });
 
@@ -905,7 +2111,7 @@ function createSplashWindow() {
     movable: false,
     alwaysOnTop: true,
     show: false,
-    backgroundColor: "#1a1a1a",
+    backgroundColor: "#0b0f14",
     autoHideMenuBar: true,
   });
 
@@ -935,7 +2141,7 @@ function createWindow() {
     maximizable: true,
     closable: true,
     show: false,
-    backgroundColor: "#1a1a1a",
+    backgroundColor: "#0b0f14",
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -945,6 +2151,26 @@ function createWindow() {
       webviewTag: true,
     },
   });
+
+  let launchFallbackTimer = null;
+  const showMainWindow = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+
+    if (launchFallbackTimer) {
+      clearTimeout(launchFallbackTimer);
+      launchFallbackTimer = null;
+    }
+
+    hideSplash();
+    if (!mainWindow.isVisible()) {
+      mainWindow.show();
+    }
+    mainWindow.webContents.send("window:maximize-changed", {
+      isMaximized: mainWindow.isMaximized(),
+    });
+  };
 
   const loadRenderer = async () => {
     const devServerUrl = process.env.VITE_DEV_SERVER_URL;
@@ -975,15 +2201,17 @@ function createWindow() {
 
   loadRenderer().catch((error) => {
     console.error("[Dockium] Failed to load renderer:", error);
+    showMainWindow();
   });
 
   mainWindow.once("ready-to-show", () => {
-    hideSplash();
-    mainWindow.show();
-    mainWindow.webContents.send("window:maximize-changed", {
-      isMaximized: mainWindow.isMaximized(),
-    });
+    showMainWindow();
   });
+
+  // Never keep splash indefinitely if renderer warmup is slow.
+  launchFallbackTimer = setTimeout(() => {
+    showMainWindow();
+  }, 9000);
 
   mainWindow.on("maximize", () => {
     mainWindow?.webContents.send("window:maximize-changed", { isMaximized: true });
@@ -994,6 +2222,10 @@ function createWindow() {
   });
 
   mainWindow.on("closed", () => {
+    if (launchFallbackTimer) {
+      clearTimeout(launchFallbackTimer);
+      launchFallbackTimer = null;
+    }
     mainWindow = null;
   });
 }
@@ -1053,6 +2285,61 @@ function setupAppMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+async function restoreProjectFromOnboardingState() {
+  const store = getStore();
+  const onboarding = store.get("onboarding") || {};
+
+  if (!onboarding?.projectLoaded) {
+    return;
+  }
+
+  if (runtime.projectConfig?.project?.targetUrl && runtime.projectPath) {
+    return;
+  }
+
+  const importedMode = Boolean(onboarding.importedMode)
+    || String(onboarding.projectPath || "").startsWith("docker://")
+    || Boolean(onboarding.importedImage);
+
+  if (importedMode && onboarding.importedImage) {
+    await hydrateImportedImageProject(onboarding.importedImage, {
+      ...(onboarding.config || {}),
+      sourceRepoPath: String(onboarding.config?.sourceRepoPath || onboarding.sourceRepoPath || ""),
+    });
+    runtime.wss?.emitLog(`Restored imported image context: ${onboarding.importedImage}`);
+    return;
+  }
+
+  if (onboarding.projectPath) {
+    await openProject(onboarding.projectPath, onboarding.config || {});
+    runtime.wss?.emitLog(`Restored project context: ${onboarding.projectPath}`);
+    return;
+  }
+
+  runtime.wss?.emitLog("Onboarding state had projectLoaded=true but no project path/image", "warn");
+}
+
+function queueProjectRestore(source = "unknown") {
+  if (projectRestoreInFlight) {
+    return projectRestoreInFlight;
+  }
+
+  projectRestoreInFlight = (async () => {
+    try {
+      await restoreProjectFromOnboardingState();
+    } catch (error) {
+      runtime.wss?.emitLog(
+        `Failed to restore onboarding project context (${source}): ${error.message}`,
+        "warn"
+      );
+    } finally {
+      projectRestoreInFlight = null;
+    }
+  })();
+
+  return projectRestoreInFlight;
+}
+
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
@@ -1084,6 +2371,7 @@ app.whenReady()
 
     createSplashWindow();
     createWindow();
+    queueProjectRestore("startup");
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) {

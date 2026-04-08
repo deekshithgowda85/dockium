@@ -301,21 +301,89 @@ DOCKIUM_PROXY=http://localhost:8080
     })
   }
 
-  async ensureScannerRunning(config) {
+  async checkScannerHealth() {
+    try {
+      const container = docker.getContainer('dockium-scanner')
+      const info = await container.inspect()
+      if (!info?.State?.Running) {
+        return {
+          healthy: false,
+          reason: `scanner container state is ${info?.State?.Status || 'unknown'}`,
+          status: String(info?.State?.Status || 'unknown'),
+        }
+      }
+
+      await this.execInContainer('dockium-scanner', ['node', '-e', 'process.exit(0)'])
+      return {
+        healthy: true,
+        reason: 'scanner exec preflight passed',
+        status: String(info?.State?.Status || 'running'),
+      }
+    } catch (error) {
+      return {
+        healthy: false,
+        reason: String(error?.message || 'scanner health check failed'),
+        status: 'unknown',
+      }
+    }
+  }
+
+  async ensureScannerRunning(config, options = {}) {
     this.healthMonitor.wss = config?.wss || this.healthMonitor.wss
     await this.ensureNetwork()
+
+    const forceRecreate = Boolean(options?.forceRecreate)
+    const outcome = {
+      created: false,
+      recreated: false,
+      healthy: false,
+      reason: '',
+      status: 'unknown',
+    }
+
+    if (forceRecreate) {
+      await this.removeIfExists('dockium-scanner')
+      await this.startScanner(config)
+      const health = await this.checkScannerHealth()
+      outcome.created = true
+      outcome.recreated = true
+      outcome.healthy = health.healthy
+      outcome.reason = health.reason
+      outcome.status = health.status
+      return outcome
+    }
 
     try {
       const container = docker.getContainer('dockium-scanner')
       const info = await container.inspect()
       if (info?.State?.Running) {
-        return
+        const health = await this.checkScannerHealth()
+        if (health.healthy) {
+          outcome.healthy = true
+          outcome.reason = health.reason
+          outcome.status = health.status
+          return outcome
+        }
+
+        await this.removeIfExists('dockium-scanner')
+        outcome.recreated = true
+        outcome.reason = `recreated unhealthy scanner: ${health.reason}`
       }
     } catch {
       // Continue to start a fresh container when it does not exist.
+      outcome.reason = 'scanner container missing; creating a new one'
     }
 
     await this.startScanner(config)
+    const health = await this.checkScannerHealth()
+    outcome.created = true
+    outcome.healthy = health.healthy
+    outcome.status = health.status
+    if (!outcome.reason) {
+      outcome.reason = health.reason
+    }
+
+    return outcome
   }
 
   async ensureAppRunning(config) {

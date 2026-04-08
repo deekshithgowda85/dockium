@@ -27,23 +27,43 @@ export const useNucleiStore = create((set, get) => ({
   status: {
     active: false,
     scanId: null,
+    targetUrl: "",
     percent: 0,
     phaseName: "idle",
     startedAt: null,
     completedAt: null,
     lastError: "",
+    preflight: null,
+    diagnostics: {
+      templateSetup: null,
+      candidates: [],
+    },
   },
   findings: [],
   loading: false,
 
   setTargetUrl: (value) => set({ targetUrl: value }),
 
+  resolveProjectTargetUrl: async () => {
+    const infoResult = await window.dockium?.project?.getInfo?.();
+    if (!infoResult?.ok) {
+      return "";
+    }
+    return String(infoResult?.projectInfo?.targetUrl || "").trim();
+  },
+
   hydrate: async () => {
     const statusResult = await window.dockium?.nuclei?.getStatus?.();
+    const projectTargetUrl = await get().resolveProjectTargetUrl();
+
     if (statusResult?.ok && statusResult.status) {
       set((state) => ({
         status: { ...state.status, ...statusResult.status },
-        targetUrl: state.targetUrl || statusResult.status.targetUrl || "",
+        targetUrl: state.targetUrl || statusResult.status.targetUrl || projectTargetUrl || "",
+      }));
+    } else if (projectTargetUrl) {
+      set((state) => ({
+        targetUrl: state.targetUrl || projectTargetUrl,
       }));
     }
 
@@ -60,38 +80,77 @@ export const useNucleiStore = create((set, get) => ({
         ...state.status,
         active: Boolean(payload.active),
         scanId: payload.scanId || state.status.scanId,
+        targetUrl: payload.targetUrl || state.status.targetUrl,
         percent: Number(payload.percent || 0),
         phaseName: payload.phaseName || state.status.phaseName,
         startedAt: payload.startedAt || state.status.startedAt,
         completedAt: payload.completedAt || state.status.completedAt,
         lastError: payload.lastError || "",
+        preflight: payload.preflight || state.status.preflight,
+        diagnostics: payload.diagnostics || state.status.diagnostics,
       },
       targetUrl: payload.targetUrl || state.targetUrl,
     }));
   },
 
-  startScan: async () => {
-    const targetUrl = String(get().targetUrl || "").trim();
+  startScan: async (forceScannerRecreate = false) => {
     set({ loading: true });
 
-    const result = await window.dockium?.nuclei?.start?.({ targetUrl });
-    if (!result?.ok) {
+    let targetUrl = String(get().targetUrl || "").trim();
+    if (!targetUrl) {
+      targetUrl = await get().resolveProjectTargetUrl();
+    }
+
+    if (!window.dockium?.nuclei?.start) {
       set((state) => ({
         loading: false,
         status: {
           ...state.status,
-          lastError: result?.error || "Failed to start Nuclei scan",
+          lastError: "Nuclei start API unavailable in preload bridge",
         },
       }));
       return;
     }
 
-    set((state) => ({
-      loading: false,
-      status: { ...state.status, ...(result.status || {}), active: true },
-      targetUrl: result?.status?.targetUrl || state.targetUrl,
-      findings: [],
-    }));
+    try {
+      const result = await window.dockium.nuclei.start({
+        targetUrl,
+        forceScannerRecreate: Boolean(forceScannerRecreate),
+      });
+      if (!result?.ok) {
+        const detail = [result?.error, result?.detail].filter(Boolean).join(" | ");
+        set((state) => ({
+          loading: false,
+          status: {
+            ...state.status,
+            lastError: detail || "Failed to start Nuclei scan",
+          },
+        }));
+        return;
+      }
+
+      set((state) => ({
+        loading: false,
+        status: {
+          ...state.status,
+          ...(result.status || {}),
+          active: true,
+          lastError: "",
+          preflight: result?.status?.preflight || null,
+          diagnostics: result?.status?.diagnostics || state.status.diagnostics,
+        },
+        targetUrl: result?.status?.targetUrl || targetUrl || state.targetUrl,
+        findings: [],
+      }));
+    } catch (error) {
+      set((state) => ({
+        loading: false,
+        status: {
+          ...state.status,
+          lastError: String(error?.message || "Failed to start Nuclei scan"),
+        },
+      }));
+    }
   },
 
   pollStatus: async () => {
@@ -135,11 +194,17 @@ export const useNucleiStore = create((set, get) => ({
       status: {
         active: false,
         scanId: null,
+        targetUrl: "",
         percent: 0,
         phaseName: "idle",
         startedAt: null,
         completedAt: null,
         lastError: "",
+        preflight: null,
+        diagnostics: {
+          templateSetup: null,
+          candidates: [],
+        },
       },
       findings: [],
       loading: false,

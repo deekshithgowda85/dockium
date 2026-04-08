@@ -1,6 +1,4 @@
 import React from "react";
-import { useMapStore } from "../store/mapStore";
-import { useScanStore } from "../store/scanStore";
 
 const severityOrder = {
   critical: 0,
@@ -10,92 +8,30 @@ const severityOrder = {
   info: 4,
 };
 
-const findings = [
-  {
-    id: "f-sqli",
-    severity: "critical",
-    title: "SQL Injection",
-    endpoint: "POST /api/search",
-    file: "src/app/api/search/route.ts:34",
-    happened:
-      "Unsanitized user input was interpolated directly into a SQL query. Attacker can extract all data from the database.",
-    proof:
-      "POST /api/search\n{ 'q': \"' OR 1=1 --\" }\nResponse: 200 (returned all 847 database rows)",
-    fix:
-      "Replace string interpolation with parameterized query:\ndb.query('SELECT * FROM posts WHERE title LIKE ?', [q])",
-  },
-  {
-    id: "f-idor",
-    severity: "critical",
-    title: "IDOR",
-    endpoint: "GET /api/users/{id}",
-    file: "src/app/api/users/[id]/route.ts:23",
-    happened:
-      "Endpoint returned other users' records when sequential identifiers were requested as a non-owner user.",
-    proof:
-      "GET /api/users/1..100 as user role\nResponse: 200 for 94 unauthorized records",
-    fix: "Add ownership check before resource read in UserController and enforce scoped query.",
-  },
-  {
-    id: "f-hsts",
-    severity: "medium",
-    title: "Missing HSTS Header",
-    endpoint: "All responses",
-    file: "src/middleware/securityHeaders.ts:11",
-    happened: "HTTP Strict-Transport-Security header was missing in responses.",
-    proof: "GET /\nResponse headers did not include Strict-Transport-Security",
-    fix: "Enable HSTS middleware for all HTTPS responses.",
-  },
-  {
-    id: "f-secrets",
-    severity: "high",
-    title: "Secret Token in Diff",
-    endpoint: "N/A",
-    file: "src/config/dev.env:5",
-    happened: "Static API token appeared in commit diff and was not masked.",
-    proof: "Detected token-like value in added line `API_TOKEN=sk_live_...`",
-    fix: "Rotate token, remove from repo history, and move secret to environment store.",
-  },
-];
-
-const owaspChecklist = [
-  { id: "A01", label: "A01 Broken Access Control", status: "FAIL", detail: "3 findings" },
-  { id: "A02", label: "A02 Cryptographic Failures", status: "PASS", detail: "0 findings" },
-  { id: "A03", label: "A03 Injection", status: "FAIL", detail: "1 critical finding" },
-  { id: "A04", label: "A04 Insecure Design", status: "PARTIAL", detail: "needs threat model" },
-  { id: "A05", label: "A05 Security Misconfiguration", status: "FAIL", detail: "2 findings" },
-  { id: "A06", label: "A06 Vulnerable Components", status: "PASS", detail: "0 CVEs" },
-  { id: "A07", label: "A07 Auth Failures", status: "PASS", detail: "0 findings" },
-  { id: "A08", label: "A08 Data Integrity Failures", status: "PASS", detail: "0 findings" },
-  { id: "A09", label: "A09 Logging Failures", status: "PARTIAL", detail: "coverage incomplete" },
-  { id: "A10", label: "A10 SSRF", status: "PASS", detail: "0 findings" },
-];
-
-const remediationChecklist = [
-  { done: false, text: "Fix SQL injection in SearchController (CRITICAL)" },
-  { done: false, text: "Add ownership check to UserController.js (CRITICAL)" },
-  { done: false, text: "Add HSTS header to all responses (MEDIUM)" },
-  { done: true, text: "Rotate leaked API token and invalidate previous credential" },
-  { done: false, text: "Add pre-push secret scan gate in CI" },
-];
-
 const initialSections = {
   executive: true,
   appMap: true,
   findings: true,
+  operations: true,
   owasp: true,
   remediation: true,
 };
 
-function flattenFolderLines(nodes, depth = 0) {
-  return nodes.flatMap((node) => {
-    const prefix = `${"  ".repeat(depth)}${node.kind === "folder" ? "+" : "-"}`;
-    const current = `${prefix} ${node.name}`;
-    if (node.kind !== "folder") {
-      return [current];
-    }
-    return [current, ...flattenFolderLines(node.children ?? [], depth + 1)];
-  });
+function flattenFolderLines(node, depth = 0) {
+  if (!node || typeof node !== "object") {
+    return [];
+  }
+
+  const nodeType = String(node?.type || node?.kind || "folder").toLowerCase();
+  const kind = nodeType === "file" ? "file" : "folder";
+  const prefix = `${"  ".repeat(depth)}${kind === "folder" ? "+" : "-"}`;
+  const current = `${prefix} ${String(node?.name || node?.path || "unknown")}`;
+  const children = Array.isArray(node?.children) ? node.children : [];
+  if (kind !== "folder" || children.length === 0) {
+    return [current];
+  }
+
+  return [current, ...children.flatMap((child) => flattenFolderLines(child, depth + 1))];
 }
 
 function owaspStateClass(status) {
@@ -106,6 +42,67 @@ function owaspStateClass(status) {
 
 function severityClass(severity) {
   return `scanner-severity-${severity}`;
+}
+
+function normalizeFinding(finding, index) {
+  return {
+    id: String(finding?.id || `finding-${index + 1}`),
+    source: String(finding?.source || "scan"),
+    severity: String(finding?.severity || "info").toLowerCase(),
+    title: String(finding?.title || finding?.name || "Untitled finding"),
+    endpoint: String(finding?.endpoint || finding?.url || "unknown"),
+    description: String(finding?.description || finding?.what || "No description"),
+    fix: String(finding?.fix || finding?.solution || "No suggested fix"),
+  };
+}
+
+function summarizeSeverity(findings = []) {
+  const summary = { total: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+  findings.forEach((finding) => {
+    const severity = String(finding?.severity || "info").toLowerCase();
+    summary.total += 1;
+    if (summary[severity] !== undefined) {
+      summary[severity] += 1;
+    } else {
+      summary.info += 1;
+    }
+  });
+  return summary;
+}
+
+function buildOwasp(findings = []) {
+  const rules = [
+    { id: "A01", label: "A01 Broken Access Control", test: /idor|access|privilege|auth bypass/i },
+    { id: "A02", label: "A02 Cryptographic Failures", test: /crypto|cipher|tls|hash/i },
+    { id: "A03", label: "A03 Injection", test: /sql|xss|command|injection/i },
+    { id: "A04", label: "A04 Insecure Design", test: /design|trust boundary|workflow/i },
+    { id: "A05", label: "A05 Security Misconfiguration", test: /header|config|debug|misconfiguration/i },
+    { id: "A06", label: "A06 Vulnerable Components", test: /cve|dependency|component/i },
+    { id: "A07", label: "A07 Auth Failures", test: /auth|jwt|session|token/i },
+    { id: "A08", label: "A08 Data Integrity Failures", test: /integrity|tamper|checksum/i },
+    { id: "A09", label: "A09 Logging Failures", test: /log|audit|monitor/i },
+    { id: "A10", label: "A10 SSRF", test: /ssrf/i },
+  ];
+
+  return rules.map((rule) => {
+    const matched = findings.filter((finding) => rule.test.test(`${finding.title} ${finding.description}`));
+    if (matched.length === 0) {
+      return { id: rule.id, label: rule.label, status: "PASS", detail: "0 findings" };
+    }
+    return {
+      id: rule.id,
+      label: rule.label,
+      status: "FAIL",
+      detail: `${matched.length} findings`,
+    };
+  });
+}
+
+function buildRemediation(findings = []) {
+  return findings.slice(0, 12).map((finding) => ({
+    done: false,
+    text: `${finding.title} (${finding.severity.toUpperCase()}) @ ${finding.endpoint}`,
+  }));
 }
 
 function Section({ id, title, isOpen, onToggle, children }) {
@@ -134,11 +131,10 @@ function buildMarkdownReport(payload) {
 
   payload.sortedFindings.forEach((finding) => {
     lines.push(`### [${finding.severity.toUpperCase()}] ${finding.title}`);
+    lines.push(`- Source: ${finding.source}`);
     lines.push(`- Endpoint: ${finding.endpoint}`);
-    lines.push(`- File: ${finding.file}`);
-    lines.push(`- What happened: ${finding.happened}`);
-    lines.push(`- Proof: ${finding.proof.replace(/\n/g, " | ")}`);
-    lines.push(`- Fix: ${finding.fix.replace(/\n/g, " | ")}`);
+    lines.push(`- What happened: ${finding.description}`);
+    lines.push(`- Fix: ${finding.fix}`);
     lines.push("");
   });
 
@@ -154,35 +150,92 @@ function buildMarkdownReport(payload) {
 }
 
 export default function Report() {
-  const { started: scanStarted, duration } = useScanStore((state) => state.lastScan);
-  const folderTree = useMapStore((state) => state.folderTree);
-  const routes = useMapStore((state) => state.routes);
-
   const [sections, setSections] = React.useState(initialSections);
+  const [loading, setLoading] = React.useState(true);
+  const [loadError, setLoadError] = React.useState("");
+  const [context, setContext] = React.useState(null);
+  const [aiSummary, setAiSummary] = React.useState("");
+  const [aiStatus, setAiStatus] = React.useState("AI summary idle");
   const [exportStatus, setExportStatus] = React.useState("Ready");
 
-  const folderLines = React.useMemo(() => flattenFolderLines(folderTree), [folderTree]);
+  const refreshContext = React.useCallback(async () => {
+    setLoading(true);
+    setLoadError("");
+    try {
+      const response = await window.dockium?.report?.getContext?.();
+      if (!response?.ok) {
+        setLoadError(String(response?.error || "Failed to load report context"));
+        setContext(null);
+      } else {
+        setContext(response.context || null);
+      }
+    } catch (error) {
+      setLoadError(String(error?.message || "Failed to load report context"));
+      setContext(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    refreshContext();
+  }, [refreshContext]);
+
+  const projectName = String(context?.project?.name || "-");
+  const scanStarted = String(context?.scan?.completedAt || "-");
+  const duration = Number(context?.scan?.durationMs || 0);
+  const durationText = duration > 0 ? `${Math.round(duration / 1000)}s` : "-";
+
+  const folderLines = React.useMemo(
+    () => flattenFolderLines(context?.appMap?.folderTree),
+    [context?.appMap?.folderTree],
+  );
   const routeLines = React.useMemo(
-    () =>
-      routes.map(
-        (route) =>
-          `${route.method.padEnd(6, " ")} ${route.path} | auth:${route.auth ? "yes" : "no"} | ${route.sourceFile}`,
-      ),
-    [routes],
+    () => (context?.appMap?.routes || []).map((route) => {
+      const authRequired = route?.authRequired ? "yes" : "no";
+      return `${String(route?.method || "GET").padEnd(6, " ")} ${route?.path || "/"} | auth:${authRequired} | ${route?.sourceFile || "unknown"}`;
+    }),
+    [context?.appMap?.routes],
   );
 
-  const sortedFindings = React.useMemo(
-    () => [...findings].sort((a, b) => severityOrder[a.severity] - severityOrder[b.severity]),
-    [],
+  const sortedFindings = React.useMemo(() => {
+    const normalized = (context?.findings || []).map(normalizeFinding);
+    return normalized.sort((a, b) => {
+      const aRank = severityOrder[a.severity] ?? 99;
+      const bRank = severityOrder[b.severity] ?? 99;
+      if (aRank !== bRank) {
+        return aRank - bRank;
+      }
+      return a.title.localeCompare(b.title);
+    });
+  }, [context?.findings]);
+
+  const summary = React.useMemo(() => summarizeSeverity(sortedFindings), [sortedFindings]);
+
+  const summaryText = React.useMemo(
+    () => `Total findings: ${summary.total} (${summary.critical} critical, ${summary.high} high, ${summary.medium} medium, ${summary.low} low, ${summary.info} info). App routes mapped: ${routeLines.length}. Proxy requests captured: ${Number(context?.proxy?.requestCount || 0)}.`,
+    [context?.proxy?.requestCount, routeLines.length, summary],
   );
 
-  const summaryText =
-    "Total findings: 21 (2 critical, 5 high, 11 medium, 3 low). OWASP Top 10 coverage: 8/10 categories tested.";
+  const owaspChecklist = React.useMemo(() => {
+    if (Array.isArray(context?.latestReport?.owaspChecklist) && context.latestReport.owaspChecklist.length > 0) {
+      return context.latestReport.owaspChecklist;
+    }
+    return buildOwasp(sortedFindings);
+  }, [context?.latestReport?.owaspChecklist, sortedFindings]);
+
+  const remediationChecklist = React.useMemo(() => {
+    if (Array.isArray(context?.latestReport?.remediationChecklist) && context.latestReport.remediationChecklist.length > 0) {
+      return context.latestReport.remediationChecklist;
+    }
+    return buildRemediation(sortedFindings);
+  }, [context?.latestReport?.remediationChecklist, sortedFindings]);
 
   const exportPayload = React.useMemo(
     () => ({
+      projectName,
       scanStarted,
-      duration,
+      duration: durationText,
       summary: summaryText,
       sortedFindings,
       owasp: owaspChecklist,
@@ -191,8 +244,34 @@ export default function Report() {
         folders: folderLines,
         routes: routeLines,
       },
+      modules: {
+        nuclei: {
+          findingsCount: Number(context?.nuclei?.findingsCount || 0),
+          status: context?.nuclei?.status || null,
+        },
+        proxy: context?.proxy || null,
+        git: context?.git || null,
+        docker: context?.docker || null,
+      },
+      aiSummary,
     }),
-    [duration, folderLines, routeLines, scanStarted, sortedFindings],
+    [
+      aiSummary,
+      context?.docker,
+      context?.git,
+      context?.nuclei?.findingsCount,
+      context?.nuclei?.status,
+      context?.proxy,
+      durationText,
+      folderLines,
+      owaspChecklist,
+      projectName,
+      remediationChecklist,
+      routeLines,
+      scanStarted,
+      sortedFindings,
+      summaryText,
+    ],
   );
 
   const toggleSection = (id) => {
@@ -229,14 +308,47 @@ export default function Report() {
     setExportStatus(`Export failed: ${result?.error ?? "Unknown error"}`);
   };
 
+  const generateAiSummary = async () => {
+    if (!window.dockium?.report?.generateSummary) {
+      setAiStatus("AI summary unavailable: IPC bridge missing");
+      return;
+    }
+
+    setAiStatus("Generating AI summary...");
+    const result = await window.dockium.report.generateSummary();
+    if (!result?.ok) {
+      setAiStatus(`AI summary failed: ${result?.error || "Unknown error"}`);
+      return;
+    }
+
+    setAiSummary(String(result.summary || ""));
+    setAiStatus(`AI summary generated (${result?.meta?.model || "model"})`);
+  };
+
+  if (loading) {
+    return <section className="report-view"><div className="report-status">Loading report context...</div></section>;
+  }
+
+  if (loadError) {
+    return (
+      <section className="report-view">
+        <div className="report-status">{loadError}</div>
+        <button className="report-export-btn" onClick={refreshContext}>Retry</button>
+      </section>
+    );
+  }
+
   return (
     <section className="report-view">
       <header className="report-toolbar">
         <div className="report-toolbar-meta">
-          <span>Scan: {scanStarted}</span>
-          <span>Duration: {duration}</span>
+          <span>Project: {projectName}</span>
+          <span>Scan Completed: {scanStarted}</span>
+          <span>Duration: {durationText}</span>
         </div>
         <div className="report-toolbar-actions">
+          <button className="report-export-btn" onClick={refreshContext}>Refresh</button>
+          <button className="report-export-btn" onClick={generateAiSummary}>Generate AI Summary</button>
           <button className="report-export-btn" onClick={() => handleExport("pdf")}>Export PDF</button>
           <button className="report-export-btn" onClick={() => handleExport("markdown")}>Export Markdown</button>
           <button className="report-export-btn" onClick={() => handleExport("json")}>Export JSON</button>
@@ -244,50 +356,60 @@ export default function Report() {
       </header>
 
       <div className="report-status">{exportStatus}</div>
+      <div className="report-status">{aiStatus}</div>
 
       <div className="report-document">
         <Section id="executive" title="EXECUTIVE SUMMARY" isOpen={sections.executive} onToggle={toggleSection}>
           <p>{summaryText}</p>
-          <p>Critical issues requiring immediate fix:</p>
-          <ul>
-            <li>- SQL injection on search endpoint</li>
-            <li>- IDOR on user resource endpoints</li>
-          </ul>
+          {aiSummary ? <pre>{aiSummary}</pre> : <p>Generate AI summary to get risk-prioritized recommendations from full app context.</p>}
         </Section>
 
         <Section id="appMap" title="APPLICATION MAP" isOpen={sections.appMap} onToggle={toggleSection}>
           <div className="report-map-grid">
             <div className="report-map-block">
               <h4>Folder Tree</h4>
-              <pre>{folderLines.join("\n")}</pre>
+              <pre>{folderLines.length > 0 ? folderLines.join("\n") : "No folder tree captured yet."}</pre>
             </div>
             <div className="report-map-block">
               <h4>Route Tree</h4>
-              <pre>{routeLines.join("\n")}</pre>
+              <pre>{routeLines.length > 0 ? routeLines.join("\n") : "No routes captured yet."}</pre>
             </div>
           </div>
+          <p>OpenAPI: {context?.appMap?.openApiSummary || "No OpenAPI summary"}</p>
+          <p>Warnings: {(context?.appMap?.warnings || []).join(" | ") || "None"}</p>
         </Section>
 
         <Section id="findings" title="FINDINGS" isOpen={sections.findings} onToggle={toggleSection}>
           <div className="report-findings-list">
+            {sortedFindings.length === 0 ? <div className="scanner-empty">No findings in current context.</div> : null}
             {sortedFindings.map((finding) => (
               <article key={finding.id} className="report-finding-block">
                 <header className="report-finding-head">
                   <span className={`report-severity ${severityClass(finding.severity)}`}>
                     [{finding.severity.toUpperCase()}]
                   </span>
-                  <span>{finding.title}</span>
+                  <span>{finding.title} ({finding.source})</span>
                 </header>
                 <p>Endpoint: {finding.endpoint}</p>
-                <p>File: {finding.file}</p>
                 <p>What happened:</p>
-                <pre>{finding.happened}</pre>
-                <p>Proof of Concept:</p>
-                <pre>{finding.proof}</pre>
+                <pre>{finding.description}</pre>
                 <p>Fix:</p>
                 <pre>{finding.fix}</pre>
               </article>
             ))}
+          </div>
+        </Section>
+
+        <Section id="operations" title="OPERATIONS SNAPSHOT" isOpen={sections.operations} onToggle={toggleSection}>
+          <div className="report-map-grid">
+            <div className="report-map-block">
+              <h4>Nuclei</h4>
+              <pre>{JSON.stringify(context?.nuclei?.status || {}, null, 2)}</pre>
+            </div>
+            <div className="report-map-block">
+              <h4>Proxy/Git/Docker</h4>
+              <pre>{JSON.stringify({ proxy: context?.proxy, git: context?.git, docker: context?.docker }, null, 2)}</pre>
+            </div>
           </div>
         </Section>
 

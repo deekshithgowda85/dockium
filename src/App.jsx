@@ -41,23 +41,25 @@ function HomeRedirect() {
           return;
         }
 
-        if (state?.projectLoaded) {
-          try {
-            const isImportedMode = Boolean(state?.importedMode)
-              || String(state?.projectPath || "").startsWith("docker://")
-              || Boolean(state?.importedImage);
-
-            if (isImportedMode && window.dockium?.projectOpenImportedImage && state?.importedImage) {
-              await window.dockium.projectOpenImportedImage(state.importedImage, state.config || {});
-            } else if (state?.projectPath && window.dockium?.projectOpen) {
-              await window.dockium.projectOpen(state.projectPath, state.config || {});
-            }
-          } catch {
-            // Continue routing even if reopen fails; user can re-open from onboarding.
-          }
-        }
-
         setTargetPath(state?.projectLoaded ? "/dashboard" : "/onboarding");
+
+        if (state?.projectLoaded) {
+          void (async () => {
+            try {
+              const isImportedMode = Boolean(state?.importedMode)
+                || String(state?.projectPath || "").startsWith("docker://")
+                || Boolean(state?.importedImage);
+
+              if (isImportedMode && window.dockium?.projectOpenImportedImage && state?.importedImage) {
+                await window.dockium.projectOpenImportedImage(state.importedImage, state.config || {});
+              } else if (state?.projectPath && window.dockium?.projectOpen) {
+                await window.dockium.projectOpen(state.projectPath, state.config || {});
+              }
+            } catch {
+              // Continue routing even if reopen fails; user can re-open from onboarding.
+            }
+          })();
+        }
       } catch {
         if (mounted) {
           setTargetPath("/dashboard");

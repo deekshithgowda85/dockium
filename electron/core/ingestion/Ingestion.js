@@ -34,16 +34,17 @@ class Ingestion {
     this.wss?.emitLog(`Seeded ${seed.recordsInserted} records across ${seed.tablesCovered} tables`)
 
     const discovery = new DiscoveryEngine(config, repoPath)
-    const routeTree = await discovery.discoverRoutes()
-    const folderTree = await discovery.discoverFileTree()
+    const appMap = await discovery.scanAppMap({
+      targetUrl: config?.project?.targetUrl,
+    })
 
     return {
       success: true,
       frameworkInfo,
       containerStatus,
-      routeCount: routeTree.length,
+      routeCount: appMap.routeTree.length,
       tableCount: schemaInfo.tables.length,
-      appMap: { routeTree, folderTree, apiGraph: [] },
+      appMap,
       envString
     }
   }

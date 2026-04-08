@@ -35,7 +35,7 @@ class InfraScanner {
 
   async checkExposedFilesAndDebug() {
     const findings = []
-    const probes = ['/.env', '/.env.local', '/.env.production', '/debug', '/__debug__', '/api/debug']
+    const probes = ['/.env', '/.env.local', '/.env.production', '/debug', '/__debug__']
 
     for (const probe of probes) {
       try {
@@ -134,8 +134,9 @@ class InfraScanner {
   }
 
   async checkRateLimit() {
-    const target = `${this.targetUrl}/api/auth/login`
+    const target = `${this.targetUrl}/login`
     let hit429 = false
+    let authSurfaceDetected = false
 
     for (let i = 0; i < 12; i += 1) {
       try {
@@ -149,6 +150,10 @@ class InfraScanner {
           hit429 = true
           break
         }
+
+        if (response.status === 200 || response.status === 401 || response.status === 403) {
+          authSurfaceDetected = true
+        }
       } catch {
         break
       }
@@ -158,12 +163,16 @@ class InfraScanner {
       return []
     }
 
+    if (!authSurfaceDetected) {
+      return []
+    }
+
     return [{
       type: 'Infrastructure',
       severity: 'medium',
       title: 'Rate Limiting Not Detected',
       description: 'No HTTP 429 responses observed on repeated auth attempts.',
-      endpoint: '/api/auth/login',
+      endpoint: '/login',
       fix: 'Add per-IP and per-account rate limiting for auth endpoints.'
     }]
   }

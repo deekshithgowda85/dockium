@@ -205,10 +205,15 @@ const api = {
     openImportedImage: (payload) => invoke("project:openImportedImage", payload),
     getInfo: () => invoke("project:getInfo"),
     getAppMap: () => invoke("project:getAppMap"),
+    startAppMapScan: (payload) => invoke("project:startAppMapScan", payload),
+    getAppMapScanStatus: () => invoke("project:getAppMapScanStatus"),
+    testRoute: (payload) => invoke("project:testRoute", payload),
   },
 
   report: {
     getLatest: () => invoke("report:getLatest"),
+    getContext: () => invoke("report:getContext"),
+    generateSummary: (payload) => invoke("report:generateSummary", payload),
     exportPdf: () => invoke("report:exportPdf"),
     exportMarkdown: (payload) => invoke("report:exportMarkdown", payload),
     exportJson: (payload) => invoke("report:exportJson", payload),

@@ -1,7 +1,8 @@
-import fs from 'fs'
+import fs from 'fs/promises'
 import path from 'path'
 
-const IGNORED = new Set(['node_modules', '.git', '.next', '__pycache__', 'dist', 'build'])
+const IGNORED = new Set(['node_modules', '.git', '.next', '__pycache__', 'dist', 'build', '.venv', 'venv'])
+const MANIFEST_NAMES = new Set(['package.json', 'pyproject.toml', 'go.mod'])
 
 function annotationFor(filePath) {
   const lower = filePath.toLowerCase()
@@ -16,22 +17,134 @@ function annotationFor(filePath) {
 }
 
 class FolderTreeBuilder {
-  async build(repoPath) {
-    const nodes = []
-    this.walk(repoPath, repoPath, 0, nodes)
-    return nodes
+  async build(repoPath, options = {}) {
+    const basePath = path.isAbsolute(repoPath) ? repoPath : path.resolve(process.cwd(), repoPath)
+    const routeCountByFile = this.createRouteCountMap(options.routes)
+    const packageGroups = await this.detectPackages(basePath)
+    const root = await this.walk(basePath, basePath, routeCountByFile, packageGroups)
+    return {
+      ...root,
+      packageGroups,
+    }
   }
 
-  walk(base, current, depth, out) {
-    for (const name of fs.readdirSync(current)) {
-      if (IGNORED.has(name)) continue
-      const full = path.join(current, name)
-      const rel = path.relative(base, full).split(path.sep).join('/')
-      const stat = fs.statSync(full)
-      const type = stat.isDirectory() ? 'directory' : 'file'
-      out.push({ path: rel, type, annotation: type === 'file' ? annotationFor(rel) : null, depth })
-      if (stat.isDirectory()) this.walk(base, full, depth + 1, out)
+  createRouteCountMap(routes = []) {
+    const map = new Map()
+    for (const route of routes || []) {
+      const sourceFile = String(route?.sourceFile || '').split(path.sep).join('/')
+      if (!sourceFile || sourceFile === 'unresolved' || sourceFile === 'openapi-spec') {
+        continue
+      }
+      map.set(sourceFile, Number(map.get(sourceFile) || 0) + 1)
     }
+    return map
+  }
+
+  async detectPackages(basePath) {
+    const packages = []
+    await this.walkPackages(basePath, basePath, packages)
+    if (packages.length === 0) {
+      return [{ name: path.basename(basePath), root: '.', manifest: '' }]
+    }
+    return packages.sort((a, b) => a.root.localeCompare(b.root))
+  }
+
+  async walkPackages(base, current, out) {
+    let entries = []
+    try {
+      entries = await fs.readdir(current, { withFileTypes: true })
+    } catch {
+      return
+    }
+
+    const rel = path.relative(base, current).split(path.sep).join('/') || '.'
+    const manifest = entries.find((entry) => entry.isFile() && MANIFEST_NAMES.has(entry.name))
+    if (manifest) {
+      out.push({
+        name: rel === '.' ? path.basename(base) : rel,
+        root: rel,
+        manifest: manifest.name,
+      })
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() || IGNORED.has(entry.name)) {
+        continue
+      }
+      await this.walkPackages(base, path.join(current, entry.name), out)
+    }
+  }
+
+  resolvePackage(relPath, packageGroups = []) {
+    const normalized = String(relPath || '').split(path.sep).join('/')
+    let winner = packageGroups.find((group) => group.root === '.') || null
+    for (const group of packageGroups) {
+      if (group.root === '.') {
+        continue
+      }
+      if (normalized === group.root || normalized.startsWith(`${group.root}/`)) {
+        if (!winner || group.root.length > winner.root.length) {
+          winner = group
+        }
+      }
+    }
+    return winner?.name || (packageGroups[0]?.name || 'project')
+  }
+
+  async walk(base, current, routeCountByFile, packageGroups) {
+    const rel = path.relative(base, current).split(path.sep).join('/')
+    const node = {
+      name: rel ? path.basename(current) : path.basename(base),
+      type: 'directory',
+      path: rel,
+      annotation: null,
+      packageName: this.resolvePackage(rel, packageGroups),
+      routeCount: 0,
+      children: [],
+    }
+
+    let entries = []
+    try {
+      entries = await fs.readdir(current, { withFileTypes: true })
+    } catch {
+      return node
+    }
+
+    entries.sort((a, b) => {
+      if (a.isDirectory() && !b.isDirectory()) return -1
+      if (!a.isDirectory() && b.isDirectory()) return 1
+      return a.name.localeCompare(b.name)
+    })
+
+    for (const entry of entries) {
+      if (IGNORED.has(entry.name)) {
+        continue
+      }
+
+      const abs = path.join(current, entry.name)
+      const childRel = path.relative(base, abs).split(path.sep).join('/')
+
+      if (entry.isDirectory()) {
+        const childDir = await this.walk(base, abs, routeCountByFile, packageGroups)
+        node.routeCount += Number(childDir.routeCount || 0)
+        node.children.push(childDir)
+        continue
+      }
+
+      const routeCount = Number(routeCountByFile.get(childRel) || 0)
+      node.routeCount += routeCount
+      node.children.push({
+        name: entry.name,
+        type: 'file',
+        path: childRel,
+        annotation: annotationFor(childRel),
+        packageName: this.resolvePackage(childRel, packageGroups),
+        routeCount,
+        children: [],
+      })
+    }
+
+    return node
   }
 }
 

@@ -6,6 +6,8 @@ const TEMPLATE_SYNC_IMAGE = 'alpine/git:latest'
 const NUCLEI_TEMPLATE_DIR = '/root/nuclei-templates'
 const NUCLEI_ALT_TEMPLATE_DIR = '/home/nonroot/nuclei-templates'
 const NUCLEI_TEMPLATE_VOLUME = 'dockium-nuclei-templates'
+const NUCLEI_COMMAND_TIMEOUT_MS = 45000
+const TEMPLATE_SYNC_TIMEOUT_MS = 90000
 
 function normalizeTargetUrl(targetUrl) {
   const raw = String(targetUrl || '').trim()
@@ -32,6 +34,21 @@ function stripAnsi(value) {
   return String(value || '')
     .replace(/\u001b\[[0-9;]*[a-zA-Z]/g, '')
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+}
+
+function formatCommand(command = []) {
+  return command.map((part) => String(part)).join(' ')
+}
+
+function clipText(value, maxLength = 220) {
+  const normalized = String(value || '').trim()
+  if (!normalized) {
+    return ''
+  }
+  if (normalized.length <= maxLength) {
+    return normalized
+  }
+  return `${normalized.slice(0, Math.max(1, maxLength - 3))}...`
 }
 
 class NucleiScanner {
@@ -253,6 +270,7 @@ class NucleiScanner {
   async runContainerCommand(command, options = {}) {
     const binds = Array.isArray(options.binds) ? options.binds : []
     const networkMode = String(options.networkMode || this.networkName)
+    const timeoutMs = Math.max(0, Number(options.timeoutMs || 0))
 
     const container = await docker.createContainer({
       Image: NUCLEI_IMAGE,
@@ -266,11 +284,51 @@ class NucleiScanner {
 
     try {
       await container.start()
-      const waitResult = await container.wait()
+      let waitResult
+      let timeoutId = null
+
+      if (timeoutMs > 0) {
+        waitResult = await new Promise((resolve) => {
+          let done = false
+
+          const settle = (value) => {
+            if (done) {
+              return
+            }
+            done = true
+            if (timeoutId) {
+              clearTimeout(timeoutId)
+            }
+            resolve(value)
+          }
+
+          container.wait()
+            .then((value) => settle(value))
+            .catch(() => settle({ StatusCode: 1 }))
+
+          timeoutId = setTimeout(async () => {
+            try {
+              await container.stop({ t: 1 })
+            } catch {}
+            settle({
+              StatusCode: 124,
+              timedOut: true,
+              timeoutMs,
+            })
+          }, timeoutMs)
+        })
+      } else {
+        waitResult = await container.wait()
+      }
+
       const logsBuffer = await container.logs({ stdout: true, stderr: true })
-      const outputText = Buffer.isBuffer(logsBuffer)
+      let outputText = Buffer.isBuffer(logsBuffer)
         ? logsBuffer.toString('utf8')
         : String(logsBuffer || '')
+
+      if (waitResult?.timedOut) {
+        outputText = `${outputText}\nCommand timed out after ${Math.round(timeoutMs / 1000)}s`
+      }
 
       return {
         waitResult,
@@ -297,36 +355,60 @@ class NucleiScanner {
 
     let lastOutput = ''
     let lastStatusCode = 0
+    const templateDiagnostics = {
+      ready: false,
+      source: 'none',
+      warnings: [],
+      attempts: [],
+    }
 
     for (const command of updateVariants) {
       const { waitResult, outputText } = await this.runContainerCommand(command, {
         networkMode: 'bridge',
         binds: this.getTemplateBinds(),
+        timeoutMs: 45000,
       })
 
       lastOutput = outputText
       lastStatusCode = Number(waitResult?.StatusCode || 0)
 
       const hasUnknownFlag = /flag provided but not defined:\s+-\S+/i.test(outputText)
+      templateDiagnostics.attempts.push({
+        command: formatCommand(command),
+        exitCode: lastStatusCode,
+        unsupportedFlag: hasUnknownFlag,
+        output: clipText(this.summarizeErrorOutput(outputText), 280),
+      })
       if (hasUnknownFlag) {
         continue
       }
 
       if (lastStatusCode !== 0) {
-        onLog?.(`Nuclei template update warning: ${this.summarizeErrorOutput(outputText)}`, 'warn')
+        const warning = `Nuclei template update warning: ${this.summarizeErrorOutput(outputText)}`
+        onLog?.(warning, 'warn')
+        templateDiagnostics.warnings.push(warning)
       } else {
         onLog?.('Nuclei templates are ready')
+        templateDiagnostics.ready = true
+        templateDiagnostics.source = 'nuclei-update-command'
       }
-      return
+      return templateDiagnostics
     }
 
     if (lastOutput) {
-      onLog?.(`Nuclei template setup warning: ${this.summarizeErrorOutput(lastOutput)}`, 'warn')
+      const warning = `Nuclei template setup warning: ${this.summarizeErrorOutput(lastOutput)}`
+      onLog?.(warning, 'warn')
+      templateDiagnostics.warnings.push(warning)
     } else {
-      onLog?.(`Nuclei template setup warning: update command failed with code ${lastStatusCode || 1}`, 'warn')
+      const warning = `Nuclei template setup warning: update command failed with code ${lastStatusCode || 1}`
+      onLog?.(warning, 'warn')
+      templateDiagnostics.warnings.push(warning)
     }
 
     await this.syncTemplatesFromGit(onLog)
+    templateDiagnostics.ready = true
+    templateDiagnostics.source = 'git-sync'
+    return templateDiagnostics
   }
 
   async syncTemplatesFromGit(onLog) {
@@ -357,9 +439,43 @@ class NucleiScanner {
 
     try {
       await container.start()
-      const waitResult = await container.wait()
+      const waitResult = await new Promise((resolve) => {
+        let done = false
+        let timeoutId = null
+
+        const settle = (value) => {
+          if (done) {
+            return
+          }
+          done = true
+          if (timeoutId) {
+            clearTimeout(timeoutId)
+          }
+          resolve(value)
+        }
+
+        container.wait()
+          .then((value) => settle(value))
+          .catch(() => settle({ StatusCode: 1 }))
+
+        timeoutId = setTimeout(async () => {
+          try {
+            await container.stop({ t: 1 })
+          } catch {}
+          settle({
+            StatusCode: 124,
+            timedOut: true,
+            timeoutMs: TEMPLATE_SYNC_TIMEOUT_MS,
+          })
+        }, TEMPLATE_SYNC_TIMEOUT_MS)
+      })
+
       const logsBuffer = await container.logs({ stdout: true, stderr: true })
       const outputText = Buffer.isBuffer(logsBuffer) ? logsBuffer.toString('utf8') : String(logsBuffer || '')
+
+      if (waitResult?.timedOut) {
+        throw new Error(`Template sync timed out after ${Math.round(TEMPLATE_SYNC_TIMEOUT_MS / 1000)}s`)
+      }
 
       if (Number(waitResult?.StatusCode || 0) !== 0) {
         throw new Error(this.summarizeErrorOutput(outputText))
@@ -401,6 +517,7 @@ class NucleiScanner {
     const runMatrix = async () => {
       let lastOutputLocal = ''
       let lastStatusCodeLocal = 0
+      const commandAttempts = []
 
       for (const baseCommand of baseCommandVariants) {
         for (const templateArgs of templateArgVariants) {
@@ -409,18 +526,30 @@ class NucleiScanner {
             const { waitResult, outputText } = await this.runContainerCommand(command, {
               networkMode: this.networkName,
               binds: this.getTemplateBinds(),
+              timeoutMs: Number(options?.timeoutMs || NUCLEI_COMMAND_TIMEOUT_MS),
             })
             lastOutputLocal = outputText
             lastStatusCodeLocal = Number(waitResult?.StatusCode || 0)
+            const summarized = this.summarizeErrorOutput(outputText)
 
             const unsupportedFlag = /flag provided but not defined:\s+-\S+/i.test(outputText)
+            const noTemplates = summarized
+              .toLowerCase()
+              .includes('no templates provided for scan')
+
+            commandAttempts.push({
+              command: formatCommand(command),
+              exitCode: lastStatusCodeLocal,
+              timedOut: Boolean(waitResult?.timedOut),
+              unsupportedFlag,
+              noTemplates,
+              output: clipText(summarized, 320),
+            })
+
             if (unsupportedFlag) {
               continue
             }
 
-            const noTemplates = this.summarizeErrorOutput(outputText)
-              .toLowerCase()
-              .includes('no templates provided for scan')
             if (noTemplates) {
               continue
             }
@@ -428,7 +557,9 @@ class NucleiScanner {
             const findings = this.parseFindings(outputText, candidateUrl)
             if (lastStatusCodeLocal !== 0) {
               const detail = this.summarizeErrorOutput(outputText)
-              throw new Error(`Nuclei exited with code ${lastStatusCodeLocal}. ${detail}`)
+              const error = new Error(`Nuclei exited with code ${lastStatusCodeLocal}. ${detail}`)
+              error.commandAttempts = commandAttempts
+              throw error
             }
 
             return {
@@ -437,9 +568,11 @@ class NucleiScanner {
                 candidateUrl,
                 findings,
                 outputText,
+                commandAttempts,
               },
               lastOutput: lastOutputLocal,
               lastStatusCode: lastStatusCodeLocal,
+              commandAttempts,
             }
           }
         }
@@ -450,15 +583,18 @@ class NucleiScanner {
         result: null,
         lastOutput: lastOutputLocal,
         lastStatusCode: lastStatusCodeLocal,
+        commandAttempts,
       }
     }
 
     let lastOutput = ''
     let lastStatusCode = 0
+    let allCommandAttempts = []
 
     const firstAttempt = await runMatrix()
     lastOutput = firstAttempt.lastOutput
     lastStatusCode = firstAttempt.lastStatusCode
+    allCommandAttempts = firstAttempt.commandAttempts || []
     if (firstAttempt.done) {
       return firstAttempt.result
     }
@@ -474,13 +610,19 @@ class NucleiScanner {
       const secondAttempt = await runMatrix()
       lastOutput = secondAttempt.lastOutput
       lastStatusCode = secondAttempt.lastStatusCode
+      allCommandAttempts = [...allCommandAttempts, ...(secondAttempt.commandAttempts || [])]
       if (secondAttempt.done) {
-        return secondAttempt.result
+        return {
+          ...secondAttempt.result,
+          commandAttempts: allCommandAttempts,
+        }
       }
     }
 
     const detail = this.summarizeErrorOutput(lastOutput)
-    throw new Error(`Nuclei exited with code ${lastStatusCode || 2}. ${detail}`)
+    const error = new Error(`Nuclei exited with code ${lastStatusCode || 2}. ${detail}`)
+    error.commandAttempts = allCommandAttempts
+    throw error
   }
 
   async scan(targetUrl, options = {}) {
@@ -494,8 +636,9 @@ class NucleiScanner {
 
     await this.ensureImage(onLog)
     onLog?.('Running Nuclei in Docker')
-    await this.ensureTemplates(onLog)
+    const templateSetup = await this.ensureTemplates(onLog)
 
+    const candidateAttempts = []
     let lastError = null
 
     for (let index = 0; index < candidates.length; index += 1) {
@@ -506,17 +649,38 @@ class NucleiScanner {
 
       try {
         const result = await this.scanCandidate(candidate, options)
+        candidateAttempts.push({
+          candidateUrl: candidate,
+          status: 'success',
+          findingCount: Array.isArray(result?.findings) ? result.findings.length : 0,
+          commands: result?.commandAttempts || [],
+        })
         return {
           targetUrl: candidate,
           findings: result.findings,
+          diagnostics: {
+            candidates: candidateAttempts,
+            templateSetup,
+          },
         }
       } catch (error) {
         lastError = error
-        onLog?.(`Nuclei candidate failed (${candidate}): ${String(error?.message || 'unknown error')}`, 'warn')
+        const message = String(error?.message || 'unknown error')
+        candidateAttempts.push({
+          candidateUrl: candidate,
+          status: 'failed',
+          findingCount: 0,
+          error: message,
+          commands: Array.isArray(error?.commandAttempts) ? error.commandAttempts : [],
+        })
+        onLog?.(`Nuclei candidate failed (${candidate}): ${message}`, 'warn')
       }
     }
 
-    throw lastError || new Error('Nuclei scan failed for all target candidates')
+    const error = lastError || new Error('Nuclei scan failed for all target candidates')
+    error.candidateAttempts = candidateAttempts
+    error.templateSetup = templateSetup
+    throw error
   }
 }
 

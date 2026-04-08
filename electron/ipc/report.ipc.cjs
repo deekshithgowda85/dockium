@@ -12,10 +12,34 @@ function defaultExportName(extension) {
 
 function registerReportIpc(ipcMain, BrowserWindow, dialog, deps) {
   const getReport = () => deps.getLatestReport() || null;
+  const getReportContext = async () => {
+    if (typeof deps.getReportContext !== "function") {
+      return null;
+    }
+    return await deps.getReportContext();
+  };
   const exporters = deps.exporters || {};
 
   ipcMain.handle("report:getLatest", async () => {
     return { ok: true, report: getReport() };
+  });
+
+  ipcMain.handle("report:getContext", async () => {
+    const context = await getReportContext();
+    return { ok: true, context };
+  });
+
+  ipcMain.handle("report:generateSummary", async (_event, payload = {}) => {
+    if (typeof deps.generateLlmSummary !== "function") {
+      return {
+        ok: false,
+        error: "LLM summary integration is not configured",
+        code: 503,
+        detail: "report:generateSummary handler unavailable",
+      };
+    }
+
+    return await deps.generateLlmSummary(payload);
   });
 
   ipcMain.handle("report:exportPdf", async (event) => {

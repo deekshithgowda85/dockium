@@ -203,6 +203,34 @@ export default function Settings() {
                     <option value="JSON">JSON</option>
                   </select>
                 </Row>
+                <Row label="Enable AI summary:">
+                  <Switch
+                    value={settings.reportLlmEnabled}
+                    onChange={() => updateSetting("reportLlmEnabled", !settings.reportLlmEnabled)}
+                  />
+                </Row>
+                <Row label="LLM endpoint URL:">
+                  <input
+                    value={settings.reportLlmEndpoint}
+                    placeholder="https://your-ngrok-host/api/generate"
+                    onChange={(event) => updateSetting("reportLlmEndpoint", event.target.value)}
+                  />
+                </Row>
+                <Row label="LLM model:">
+                  <input
+                    value={settings.reportLlmModel}
+                    placeholder="qwen2.5:3b"
+                    onChange={(event) => updateSetting("reportLlmModel", event.target.value)}
+                  />
+                </Row>
+                <Row label="LLM API key (optional):">
+                  <input
+                    type="password"
+                    value={settings.reportLlmApiKey}
+                    placeholder="Optional bearer token"
+                    onChange={(event) => updateSetting("reportLlmApiKey", event.target.value)}
+                  />
+                </Row>
               </>
             ) : null}
 

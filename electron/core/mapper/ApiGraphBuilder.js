@@ -11,6 +11,26 @@ function inferSchema(values) {
   return Object.fromEntries(Object.entries(schema).map(([k, v]) => [k, { type: v.type }]))
 }
 
+function normalizeSchema(value) {
+  if (!value) {
+    return {}
+  }
+
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value)
+    } catch {
+      return { raw: value }
+    }
+  }
+
+  if (typeof value === 'object') {
+    return value
+  }
+
+  return {}
+}
+
 class ApiGraphBuilder {
   async buildFromTraffic(capturedRequests) {
     const grouped = new Map()
@@ -39,6 +59,31 @@ class ApiGraphBuilder {
     }
 
     return graph
+  }
+
+  async buildFromRoutes(routes = []) {
+    return (routes || []).map((route, index) => {
+      const method = String(route?.method || 'GET').toUpperCase()
+      const path = String(route?.path || '/')
+      const requestSchema = normalizeSchema(route?.request?.bodySchema)
+      const responseSchema = normalizeSchema(route?.response?.bodySchema)
+      const middleware = Array.isArray(route?.middlewareChain) ? route.middlewareChain : []
+
+      return {
+        id: route?.id || `flow-${index + 1}`,
+        route: `${method} ${path}`,
+        method,
+        path,
+        requestSchema,
+        responseSchema,
+        callChain: [
+          `${method} ${path}`,
+          ...middleware.map((entry) => `middleware:${entry}`),
+          `handler:${route?.handlerName || 'unknown'}`,
+          `source:${route?.sourceFile || 'unresolved'}:${route?.sourceLine || 1}`,
+        ],
+      }
+    })
   }
 }
 

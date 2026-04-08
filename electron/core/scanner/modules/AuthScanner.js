@@ -6,11 +6,20 @@ class AuthScanner {
     this.targetUrl = config.project.targetUrl
   }
 
+  isApiOrRestPath(pathValue) {
+    const path = String(pathValue || '/').toLowerCase()
+    return path === '/api' || path.startsWith('/api/') || path === '/rest' || path.startsWith('/rest/')
+  }
+
   async scan(endpoints) {
     console.log(`[AuthScanner] Scanning auth on ${endpoints.length} endpoints`)
     const findings = []
 
     for (const endpoint of endpoints) {
+      if (this.isApiOrRestPath(endpoint?.path)) {
+        continue
+      }
+
       try {
         const issues = await this.checkAuthIssues(endpoint)
         findings.push(...issues)

@@ -44,6 +44,9 @@ export default function Onboarding() {
   const [importingImage, setImportingImage] = React.useState(false);
   const [isMaximized, setIsMaximized] = React.useState(false);
   const [importedImage, setImportedImage] = React.useState("");
+  const [importedSourcePath, setImportedSourcePath] = React.useState("");
+  const [adminEmail, setAdminEmail] = React.useState("admin@dockium.local");
+  const [adminPassword, setAdminPassword] = React.useState("Password123!");
 
   const normalizeDockerImageInput = React.useCallback((value) => {
     const raw = String(value || "").trim();
@@ -59,27 +62,72 @@ export default function Onboarding() {
     try {
       const parsed = new URL(candidate);
       const host = parsed.hostname.toLowerCase();
-      if (host !== "hub.docker.com" && host !== "www.hub.docker.com") {
-        return "";
-      }
-
       const segments = parsed.pathname.split("/").filter(Boolean);
-      if (segments.length < 3 || segments[0] !== "r") {
+      if (host === "hub.docker.com" || host === "www.hub.docker.com") {
+        if (segments.length < 3 || segments[0] !== "r") {
+          return "";
+        }
+
+        const namespace = segments[1] === "_" ? "library" : segments[1];
+        const image = segments[2];
+        const tag = parsed.searchParams.get("tag") || "latest";
+        if (!namespace || !image) {
+          return "";
+        }
+
+        return `${namespace}/${image}:${tag}`;
+      }
+
+      if (!segments.length) {
         return "";
       }
 
-      const namespace = segments[1] === "_" ? "library" : segments[1];
-      const image = segments[2];
-      const tag = parsed.searchParams.get("tag") || "latest";
-      if (!namespace || !image) {
-        return "";
+      const imageRef = `${host}/${segments.join("/")}`;
+      const tag = parsed.searchParams.get("tag");
+      if (tag && !/:[^/]+$/.test(imageRef) && !imageRef.includes("@")) {
+        return `${imageRef}:${tag}`;
       }
 
-      return `${namespace}/${image}:${tag}`;
+      return imageRef;
     } catch {
       return "";
     }
   }, []);
+
+  const normalizeRecentItems = React.useCallback((items) => {
+    if (!Array.isArray(items)) {
+      return [];
+    }
+
+    return items
+      .map((entry) => {
+        if (typeof entry === "string") {
+          const normalized = normalizeDockerImageInput(entry) || String(entry).trim();
+          if (!normalized) {
+            return null;
+          }
+          return { url: normalized, importedAt: Date.now(), size: null };
+        }
+
+        if (!entry || typeof entry !== "object") {
+          return null;
+        }
+
+        const normalized = normalizeDockerImageInput(entry.url) || String(entry.url || "").trim();
+        if (!normalized) {
+          return null;
+        }
+
+        return {
+          ...entry,
+          url: normalized,
+          importedAt: Number(entry.importedAt || Date.now()),
+          sourceRepoPath: String(entry.sourceRepoPath || "").trim(),
+        };
+      })
+      .filter(Boolean)
+      .slice(0, 8);
+  }, [normalizeDockerImageInput]);
 
   const detectProject = React.useCallback(async (pathValue) => {
     const api = window.dockium?.onboardingDetectProject;
@@ -104,9 +152,9 @@ export default function Onboarding() {
 
     const result = await api();
     if (result?.ok && Array.isArray(result.recent)) {
-      setRecentImports(result.recent);
+      setRecentImports(normalizeRecentItems(result.recent));
     }
-  }, []);
+  }, [normalizeRecentItems]);
 
   const persistOnboardingState = React.useCallback(async (projectLoaded) => {
     const api = window.dockium?.onboardingSetState;
@@ -124,10 +172,14 @@ export default function Onboarding() {
         portOverride: Number(portOverride) || 3000,
         dbTypeOverride,
         useDbContainer: false,
+        sourceRepoPath: importedSourcePath,
+        adminEmail,
+        adminPassword,
       },
-      deferProjectOpen: false,
+      sourceRepoPath: importedSourcePath,
+      deferProjectOpen: true,
     });
-  }, [dbTypeOverride, detection, importedImage, portOverride, projectPath]);
+  }, [adminEmail, adminPassword, dbTypeOverride, detection, importedImage, importedSourcePath, portOverride, projectPath]);
 
   const importDockerByUrl = React.useCallback(async (rawUrl) => {
     const url = String(rawUrl || dockerImageUrl).trim();
@@ -158,7 +210,10 @@ export default function Onboarding() {
 
     setImportingImage(true);
     try {
-      const result = await api({ url: normalizedInput });
+      const result = await api({
+        url: normalizedInput,
+        sourceRepoPath: importedSourcePath,
+      });
       if (!result?.ok) {
         addToast({
           type: "error",
@@ -168,8 +223,9 @@ export default function Onboarding() {
         return;
       }
 
-      setRecentImports(result.recent || []);
+      setRecentImports(normalizeRecentItems(result.recent || []));
       setImportedImage(result.image || normalizedInput);
+      setImportedSourcePath(String(result.sourceRepoPath || importedSourcePath || ""));
       setDockerImageUrl("");
       addToast({
         type: "success",
@@ -185,7 +241,7 @@ export default function Onboarding() {
     } finally {
       setImportingImage(false);
     }
-  }, [addToast, dockerImageUrl, importingImage, normalizeDockerImageInput]);
+  }, [addToast, dockerImageUrl, importedSourcePath, importingImage, normalizeDockerImageInput, normalizeRecentItems]);
 
   const runBootInBackground = React.useCallback(async () => {
     if (booting || bootStarted) {
@@ -240,6 +296,9 @@ export default function Onboarding() {
           portOverride: Number(portOverride) || 3000,
           dbTypeOverride,
           useDbContainer: false,
+          sourceRepoPath: importedSourcePath,
+          adminEmail,
+          adminPassword,
         });
         if (opened?.ok === false) {
           throw new Error(opened.error || "Imported image hydration failed");
@@ -293,7 +352,10 @@ export default function Onboarding() {
     bootStarted,
     booting,
     dbTypeOverride,
+    adminEmail,
+    adminPassword,
     importedImage,
+    importedSourcePath,
     portOverride,
     projectPath,
     setInitialization,
@@ -344,6 +406,10 @@ export default function Onboarding() {
         setImportedImage(state.importedImage);
       }
 
+      if (state.sourceRepoPath || state.config?.sourceRepoPath) {
+        setImportedSourcePath(String(state.sourceRepoPath || state.config?.sourceRepoPath || ""));
+      }
+
       if (state.projectPath) {
         setProjectPath(state.projectPath);
       }
@@ -358,6 +424,14 @@ export default function Onboarding() {
 
       if (state.config?.dbTypeOverride) {
         setDbTypeOverride(state.config.dbTypeOverride);
+      }
+
+      if (state.config?.adminEmail) {
+        setAdminEmail(String(state.config.adminEmail));
+      }
+
+      if (state.config?.adminPassword) {
+        setAdminPassword(String(state.config.adminPassword));
       }
     };
 
@@ -430,6 +504,20 @@ export default function Onboarding() {
 
     setProjectPath(result.projectPath);
     setDetection(result.detection);
+  };
+
+  const browseImportedSource = async () => {
+    const api = window.dockium?.onboardingBrowseProject;
+    if (!api) {
+      return;
+    }
+
+    const result = await api();
+    if (!result?.ok) {
+      return;
+    }
+
+    setImportedSourcePath(String(result.projectPath || ""));
   };
 
   const completeOnboarding = async () => {
@@ -538,6 +626,18 @@ export default function Onboarding() {
                 </div>
               </div>
 
+              <div className="onboarding-form-row">
+                <label>Attach local source folder (optional, for real File tab)</label>
+                <div className="onboarding-inline-row">
+                  <input
+                    value={importedSourcePath}
+                    placeholder="D:/Projects/your-app"
+                    onChange={(event) => setImportedSourcePath(event.target.value)}
+                  />
+                  <button className="onboarding-btn" onClick={browseImportedSource}>Browse</button>
+                </div>
+              </div>
+
               {recentImports.length > 0 ? (
                 <div className="onboarding-recent-box">
                   <p className="onboarding-recent-title">Recent Docker Imports</p>
@@ -548,6 +648,7 @@ export default function Onboarding() {
                       onClick={() => {
                         setDockerImageUrl(item.url);
                         setImportedImage(item.url);
+                        setImportedSourcePath(String(item.sourceRepoPath || ""));
                       }}
                     >
                       {item.url}
@@ -578,6 +679,14 @@ export default function Onboarding() {
                   <option value="MySQL">MySQL</option>
                   <option value="SQLite">SQLite</option>
                 </select>
+              </div>
+              <div className="onboarding-form-row">
+                <label>Auto-auth email</label>
+                <input value={adminEmail} onChange={(event) => setAdminEmail(event.target.value)} />
+              </div>
+              <div className="onboarding-form-row">
+                <label>Auto-auth password</label>
+                <input type="password" value={adminPassword} onChange={(event) => setAdminPassword(event.target.value)} />
               </div>
             </section>
           ) : null}

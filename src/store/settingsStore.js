@@ -18,6 +18,10 @@ const defaultSettings = {
   maxScanDuration: "5 min",
   reportIncludeEvidence: true,
   reportDefaultFormat: "PDF",
+  reportLlmEnabled: false,
+  reportLlmEndpoint: "",
+  reportLlmModel: "qwen2.5:3b",
+  reportLlmApiKey: "",
   advancedTelemetry: false,
   advancedVerboseIpc: false,
 };

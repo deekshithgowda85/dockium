@@ -11,11 +11,20 @@ class ApiScanner {
     ]
   }
 
+  isApiOrRestPath(pathValue) {
+    const path = String(pathValue || '/').toLowerCase()
+    return path === '/api' || path.startsWith('/api/') || path === '/rest' || path.startsWith('/rest/')
+  }
+
   async scan(endpoints) {
     console.log(`[ApiScanner] Scanning ${endpoints.length} endpoints`)
     const findings = []
 
     for (const endpoint of endpoints) {
+      if (this.isApiOrRestPath(endpoint?.path)) {
+        continue
+      }
+
       try {
         const result = await this.testEndpoint(endpoint)
         if (result.findings) {

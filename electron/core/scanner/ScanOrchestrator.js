@@ -14,6 +14,7 @@ class ScanOrchestrator {
     this.config = config
     this.discovery = new DiscoveryEngine(config, config.project.path)
     this.routeCache = null
+    this.scannerRouteCache = null
   }
 
   async run(scanMode = 'full', modules = null) {
@@ -92,19 +93,41 @@ class ScanOrchestrator {
     return this.routeCache
   }
 
-  async runModule(moduleName, scanMode) {
+  isAppMapOwnedRoute(route) {
+    const rawPath = String(route?.path || '/').trim().toLowerCase()
+    if (!rawPath) {
+      return false
+    }
+
+    return rawPath === '/api'
+      || rawPath.startsWith('/api/')
+      || rawPath === '/rest'
+      || rawPath.startsWith('/rest/')
+  }
+
+  async getScannerRoutes() {
+    if (this.scannerRouteCache) {
+      return this.scannerRouteCache
+    }
+
     const routes = await this.getRoutes()
+    this.scannerRouteCache = routes.filter((route) => !this.isAppMapOwnedRoute(route))
+    return this.scannerRouteCache
+  }
+
+  async runModule(moduleName, scanMode) {
+    const scannerRoutes = await this.getScannerRoutes()
 
     if (moduleName === 'api') {
-      return await new ApiScanner(this.config).scan(routes)
+      return await new ApiScanner(this.config).scan(scannerRoutes)
     }
 
     if (moduleName === 'auth') {
-      return await new AuthScanner(this.config).scan(routes)
+      return await new AuthScanner(this.config).scan(scannerRoutes)
     }
 
     if (moduleName === 'input') {
-      return await new InputScanner(this.config).scan(routes)
+      return await new InputScanner(this.config).scan(scannerRoutes)
     }
 
     if (moduleName === 'secrets') {

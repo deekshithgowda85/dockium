@@ -1,0 +1,37 @@
+appId: com.dockium.desktop
+productName: DOCKIUM
+directories:
+  output: release
+  buildResources: electron
+files:
+  - dist/**
+  - electron/**
+  - package.json
+  - DOCKIUM-Build-Prompts.txt
+  - DOCKIUM-Backend.txt
+  - "!**/*.map"
+  - "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}"
+  - "!**/node_modules/*/{test,__tests__,tests,example,examples}"
+extraMetadata:
+  main: electron/main.cjs
+asar: true
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: DOCKIUM-Setup-${version}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: DOCKIUM
+mac:
+  target:
+    - dmg
+    - zip
+linux:
+  target:
+    - AppImage

@@ -1,0 +1,1008 @@
+﻿B. BACKEND PROMPTS
+All backend prompts produce Node.js modules running inside the Electron main process.
+IPC bridge connects main process to renderer (React). Never call Node APIs from renderer.
+
+B1. Electron Shell + IPC Bridge
+
+[PROMPT]
+Set up the Electron application shell for DOCKIUM.
+
+Files to create:
+  electron/main.js          - entry point
+  electron/preload.js       - context bridge (security boundary)
+  electron/ipc/docker.ipc.js
+  electron/ipc/scan.ipc.js
+  electron/ipc/git.ipc.js
+  electron/ipc/proxy.ipc.js
+
+main.js requirements:
+  - Create BrowserWindow 1280x900, no frame (custom titlebar), dark background.
+  - Load renderer (React app via localhost:5173 in dev, dist/index.html in prod).
+  - Initialize all IPC handlers on app ready.
+  - Start the WebSocket server (import from core/realtime/WebSocketServer.js).
+  - Handle app lifecycle: window-all-closed, before-quit (stop all containers).
+  - Single instance lock - prevent multiple DOCKIUM windows.
+
+preload.js requirements:
+  - Use contextBridge.exposeInMainWorld('dockium', { ... })
+  - Expose these IPC channels to the renderer:
+    docker: { startAll, stopAll, getStatus, getStats }
+    scan: { start, stop, getFindings, getStatus }
+    git: { installHook, removeHook, getPushHistory, getGateStatus }
+    proxy: { start, stop, getRequests, replay, clearRequests }
+    project: { open, getInfo, getAppMap }
+    report: { getLatest, exportPdf, exportMarkdown, exportJson }
+  - Each exposed function wraps ipcRenderer.invoke(channel, ...args)
+  - Also expose a ws property: { onFinding, onLog, onContainerUpdate }
+    These subscribe to WebSocket events from the backend daemon.
+
+IPC handler pattern (docker.ipc.js example):
+  ipcMain.handle('docker:getStatus', async () => {
+    return await ContainerManager.getStatus();
+  });
+
+Security: nodeIntegration: false, contextIsolation: true, sandbox: true.
+Use electron-store for persistent settings (auto-encrypted).
+Provide package.json with all required dependencies.
+
+B2. Docker Orchestrator
+
+[PROMPT]
+Build the Docker orchestration layer for DOCKIUM.
+
+Files:
+  core/orchestrator/ContainerManager.js
+  core/orchestrator/NetworkManager.js
+  core/orchestrator/HealthMonitor.js
+
+Use 'dockerode' npm package for all Docker operations.
+
+ContainerManager.js:
+  Manages four containers: app, proxy (http-mitm-proxy), zap, db.
+
+  Methods required:
+  - async startAll(projectConfig)
+    → Creates isolated Docker network (dockium-net)
+    → Pulls images if not cached (show progress via WebSocket)
+    → Starts containers in order: db → app → proxy → zap
+    → Waits for health checks before proceeding to next
+    → Returns { success, containers }
+
+  - async stopAll()
+    → Stops and removes all DOCKIUM containers and network
+    → Cleans up generated Dockerfiles and temp files
+
+  - async getStatus()
+    → Returns live status for each container:
+      { name, status, ports, cpuPercent, memMB, health }
+
+  - async restartContainer(name)
+    → Restarts a single named container
+
+  - async execInContainer(name, command)
+    → Run a command inside a container, return stdout/stderr
+
+NetworkManager.js:
+  - async createNetwork(name)
+    → Creates a Docker bridge network. name = 'dockium-{uuid}'
+  - async removeNetwork(name)
+  - Network options: internal: false (app needs internet for CDN assets in dev)
+
+HealthMonitor.js:
+  - Polls container health every 5 seconds using Docker Events API
+  - Emits events via the WebSocket server: { type: 'container', data: status }
+  - Handles container crash: logs error, attempts 1 auto-restart, then stops
+  - Method: start(containers) / stop()
+
+Error handling: all failures emit WebSocket log event with error detail.
+Use winston for internal logging (file: logs/orchestrator.log).
+
+B3. Framework Detector + Dockerfile Generator
+
+[PROMPT]
+Build the framework detection and Dockerfile generation system for DOCKIUM.
+
+Files:
+  core/detector/FrameworkDetector.js
+  core/detector/EnvDetector.js
+  core/docker-templates/generator.js
+  core/docker-templates/nextjs.Dockerfile
+  core/docker-templates/express.Dockerfile
+  core/docker-templates/django.Dockerfile
+  core/docker-templates/laravel.Dockerfile
+  core/docker-templates/rails.Dockerfile
+  core/docker-templates/fastapi.Dockerfile
+
+FrameworkDetector.js:
+  async detect(repoPath) → returns:
+  {
+    framework: 'nextjs' | 'express' | 'django' | 'laravel' | 'rails' | 'fastapi',
+    version: '14.2.0',
+    language: 'node' | 'python' | 'ruby' | 'php',
+    packageManager: 'npm' | 'yarn' | 'pnpm' | 'pip' | 'bundle' | 'composer',
+    dbType: 'postgres' | 'mysql' | 'sqlite' | null,
+    ormType: 'prisma' | 'sequelize' | 'typeorm' | 'django-orm' | null,
+    ports: [3000],
+    hasTests: boolean,
+    testCommand: 'npm test' | 'pytest' | 'bundle exec rspec' | null
+  }
+
+  Detection logic:
+  - Read package.json: check dependencies for next, express, fastapi, etc.
+  - Read requirements.txt / Pipfile for Python frameworks
+  - Read Gemfile for Rails
+  - Read composer.json for Laravel
+  - Detect version from exact dependency version string
+  - Detect DB from ORM packages (pg, mysql2, prisma, sequelize, etc.)
+
+EnvDetector.js:
+  async generateEnv(repoPath, frameworkInfo) → returns:
+  - Reads .env.example if it exists
+  - Replaces placeholder values with safe working defaults:
+    DATABASE_URL → points to DOCKIUM db container
+    SECRET_KEY / JWT_SECRET → generates random 32-char hex string
+    PORT → uses detected port
+    REDIS_URL → omits if no redis detected
+  - Returns { envString, envPath }
+
+generator.js:
+  async generate(repoPath, frameworkInfo) → returns Dockerfile string.
+  - Picks the correct template based on frameworkInfo.framework
+  - Fills in: base image version, package manager install command,
+    build command, start command, exposed port
+  - Writes generated Dockerfile to repoPath/.dockium.Dockerfile
+  - Returns the path
+
+Dockerfile template requirements:
+  - Multi-stage builds for production-like behavior
+  - Layer caching optimized (COPY package.json → install → COPY source)
+  - HEALTHCHECK instruction per container
+  - Non-root user for security
+  - Provide full content for nextjs.Dockerfile and express.Dockerfile at minimum.
+
+B4. App Ingestion Pipeline
+
+[PROMPT]
+Build the full app ingestion pipeline for DOCKIUM.
+This is called when the user drops a project folder onto the app.
+
+File: core/ingestion/Ingestion.js
+
+async ingest(repoPath):
+  This is the master orchestrator for getting a project running.
+  It calls all the other modules in sequence and streams progress
+  via WebSocket log events.
+
+  Step 1: Detect framework
+    → FrameworkDetector.detect(repoPath)
+    → Log: 'Detected: Next.js 14.2.0'
+
+  Step 2: Generate env file
+    → EnvDetector.generateEnv(repoPath, frameworkInfo)
+    → Writes .dockium.env to repoPath
+    → Log: 'Generated .env with 8 variables'
+
+  Step 3: Generate Dockerfile
+    → generator.generate(repoPath, frameworkInfo)
+    → Log: 'Generated Dockerfile for Next.js'
+
+  Step 4: Clone DB schema
+    → SchemaCloner.clone(repoPath, frameworkInfo)
+    → Returns SQL DDL string
+    → Log: 'Cloned schema: 12 tables detected'
+
+  Step 5: Start containers
+    → ContainerManager.startAll(config)
+    → Log per container: 'Starting app container...' / 'App container healthy'
+
+  Step 6: Seed database
+    → DataSeeder.seed(schemaInfo)
+    → Log: 'Seeded 500 records across 12 tables'
+
+  Step 7: Validate app boots
+    → HTTP GET localhost:{port}/  (retry up to 10x with 2s delay)
+    → If fails after 10 retries: return { success: false, error: 'App failed to boot' }
+    → Log: 'App available at localhost:3000'
+
+  Step 8: Run discovery
+    → RouteExtractor.extract(repoPath, frameworkInfo)
+    → FolderTreeBuilder.build(repoPath)
+    → Log: 'Discovered 47 routes, 312 files'
+
+  Returns: { success, frameworkInfo, containerStatus, routeCount, tableCount }
+
+  All errors: caught per step, logged with context, ingestion continues
+  where possible (non-critical steps). DB seeding failure = warn, not abort.
+
+B5. Discovery Engine
+
+[PROMPT]
+Build the discovery engine for DOCKIUM.
+
+Files:
+  core/mapper/FolderTreeBuilder.js
+  core/mapper/RouteExtractor.js
+  core/mapper/ApiGraphBuilder.js
+  core/mapper/AuthBoundaryMapper.js
+
+FolderTreeBuilder.js:
+  async build(repoPath) → returns array of nodes:
+  [{
+    path: 'src/app/api/auth/route.ts',
+    type: 'file' | 'directory',
+    annotation: 'ROUTE' | 'MIDDLEWARE' | 'CONFIG' | 'MIGRATION'
+               | 'COMPONENT' | 'TEST' | 'UTIL' | null,
+    depth: 3
+  }]
+
+  Annotation rules:
+  - ROUTE: files in /api/ dir, or named route.ts/js, or urls.py, or routes/*.rb
+  - MIDDLEWARE: named middleware.*, or in middleware/ folder
+  - CONFIG: next.config.*, vite.config.*, settings.py, database.yml
+  - MIGRATION: in migrations/ or prisma/migrations/
+  - TEST: in __tests__/, spec/, *.test.ts, *.spec.ts
+  - Ignore: node_modules/, .git/, .next/, __pycache__/
+
+RouteExtractor.js:
+  async extract(repoPath, frameworkInfo) → returns array of routes:
+  [{
+    method: 'GET' | 'POST' | 'DELETE' | 'PATCH' | 'PUT',
+    path: '/api/users/:id',
+    authRequired: boolean,
+    sourceFile: 'src/app/api/users/[id]/route.ts',
+    sourceLine: 12,
+    params: ['id'],
+    queryParams: ['include'],
+    inferred: false  // true = found via traffic, false = static analysis
+  }]
+
+  Static analysis per framework:
+  - Next.js: scan src/app/**/route.ts|js files, read exported function names
+             (GET, POST, DELETE, PATCH = methods). Parse [param] folder names.
+  - Express: parse router files, find app.get/post/delete + router.get/post/delete
+  - Django: parse urls.py, follow include() chains
+  - Rails: parse config/routes.rb
+
+  Auth detection heuristics:
+  - Next.js: check if route imports getServerSession / withAuth / requireAuth
+  - Express: check if route has auth middleware in the chain
+  - Look for: 'auth', 'protect', 'requireLogin', 'isAuthenticated' patterns
+
+ApiGraphBuilder.js:
+  async buildFromTraffic(capturedRequests) → returns per-route graph:
+  [{
+    route: '/api/users/:id',
+    requestSchema: { /* inferred JSON schema */ },
+    responseSchema: { /* inferred JSON schema */ },
+    callChain: ['UserController.get', 'UserService.findById', 'users table']
+  }]
+
+  Schema inference: analyze 10+ real requests to the same route,
+  infer field names and types from request/response bodies.
+
+AuthBoundaryMapper.js:
+  async map(routes, capturedRequests) → returns:
+  [{
+    path: '/api/admin/*',
+    requiredRole: 'admin' | 'user' | 'any' | 'none',
+    enforcedBy: 'middleware' | 'route-level' | 'unprotected'
+  }]
+
+B6. Proxy Engine
+
+[PROMPT]
+Build the intercepting proxy engine for DOCKIUM.
+
+Files:
+  core/proxy/ProxyServer.js
+  core/proxy/RequestCapture.js
+  core/proxy/RequestModifier.js
+  core/proxy/ZapBridge.js
+
+ProxyServer.js:
+  Uses 'http-mitm-proxy' npm package.
+  Embeds directly in the Electron main process - no separate container.
+
+  async start(port = 8080):
+  - Creates proxy instance
+  - Intercepts all HTTP/HTTPS traffic
+  - For each request: calls RequestCapture.capture(req, res)
+  - For suspicious requests (heuristics below): calls ZapBridge.forward(req)
+  - Streams all captured requests to UI via WebSocket: { type: 'request', data: reqObj }
+
+  Suspicious request heuristics (auto-flag as SUSPICIOUS):
+  - POST to auth endpoints (/login, /signin, /auth/*)
+  - Any 401 or 403 response
+  - Request to admin endpoints (/admin/*, /api/admin/*)
+  - Request with SQL-like patterns in body
+
+  async stop(): stops proxy, clears captured requests
+  getStatus(): returns { running, port, requestCount }
+
+RequestCapture.js:
+  Stores all intercepted requests in memory (max 10,000, then ring buffer).
+  Each captured request object:
+  {
+    id: number,
+    timestamp: ISO string,
+    method: string,
+    host: string,
+    path: string,
+    requestHeaders: object,
+    requestBody: string,
+    responseStatus: number,
+    responseHeaders: object,
+    responseBody: string,
+    durationMs: number,
+    flag: 'normal' | 'suspicious' | 'finding',
+    jwtDecoded: object | null
+  }
+
+  JWT auto-detection: check Authorization header and response body for 'eyJ' prefix.
+  If found, decode (base64 decode header + payload, do not verify signature).
+  Store decoded object in jwtDecoded field.
+
+RequestModifier.js:
+  async replay(capturedRequest, modifications):
+  - Applies modifications (override headers, body fields, path params)
+  - Resends the request using node-fetch
+  - Returns new captured request object with isReplay: true
+  - Emits via WebSocket so it appears in the proxy list
+
+ZapBridge.js:
+  Calls OWASP ZAP REST API on the ZAP container.
+  ZAP container address: http://zap:8090 (Docker internal DNS)
+
+  async startActiveScan(targetUrl):
+  → POST /JSON/ascan/action/scan/?url={targetUrl}&recurse=true
+  → Returns scanId
+
+  async getScanProgress(scanId):
+  → GET /JSON/ascan/view/status/?scanId={scanId}
+  → Returns percentage complete
+
+  async getAlerts():
+  → GET /JSON/core/view/alerts/
+  → Maps ZAP alert format to DOCKIUM finding format:
+    { severity, name, endpoint, description, proof, fix }
+
+  async forwardRequest(capturedRequest):
+  → Submits request to ZAP spider for further crawling
+
+B7. Browser Fleet
+
+[PROMPT]
+Build the browser fleet system for DOCKIUM using Playwright.
+
+Files:
+  core/browser/BrowserFleet.js
+  core/browser/BrowserSession.js
+  core/browser/FieldAnalyzer.js
+  core/browser/PayloadLibrary.js
+  core/browser/roles/LegitUser.js
+  core/browser/roles/AttackerUser.js
+  core/browser/roles/AdminMapper.js
+  core/browser/roles/FieldFuzzer.js
+
+BrowserFleet.js:
+  Manages all browser sessions. Creates a shared Playwright browser instance.
+
+  async start(targetUrl, credentials):
+  - Launch Chromium via Playwright (headless: false for visibility)
+  - All contexts use proxy: { server: 'http://localhost:8080' } ← routes through DOCKIUM proxy
+  - Start sessions concurrently: LegitUser, AttackerUser, AdminMapper, FieldFuzzer
+  - Stream updates via WebSocket: { type: 'fleet', sessionId, event, data }
+
+  async stop(): close all contexts and browser
+  getStatus(): returns array of session statuses
+
+BrowserSession.js:
+  Base class for all role sessions.
+  Properties: sessionId, role, context (Playwright BrowserContext), page, status
+  Methods:
+  - async navigate(url): navigates, captures screenshot on error
+  - async findForms(): returns all form elements on current page
+  - async log(message): emits log event via WebSocket
+  - screenshot capture: on every finding, capture and save to screenshots/
+
+LegitUser.js extends BrowserSession:
+  - Logs in using provided credentials
+  - Navigates the app naturally: visits every discovered route in order
+  - Records all requests made (feeds into ApiGraphBuilder for traffic analysis)
+  - Acts as baseline - any resource it accesses that AttackerUser can also access = FINDING
+
+AttackerUser.js extends BrowserSession:
+  - Starts as unauthenticated
+  - Attempts to access every URL that LegitUser visited
+  - Iterates resource IDs (from 1 to 100) on any endpoint with :id or /{id}
+  - Compares responses: 200 on a resource owned by LegitUser = IDOR finding
+  - Reports findings to ScanOrchestrator
+
+AdminMapper.js extends BrowserSession:
+  - Logs in with admin credentials (from config)
+  - Maps all admin-only routes and surfaces
+  - Passes admin route list to AttackerUser for escalation testing
+
+FieldFuzzer.js extends BrowserSession:
+  - For each page with forms: calls FieldAnalyzer.analyze(page)
+  - For each field: runs targeted payload set from PayloadLibrary
+  - XSS detection: checks if payload appears unescaped in response DOM
+  - SQLi detection: checks for DB error strings in response
+  - Takes screenshot on each triggered finding
+
+FieldAnalyzer.js:
+  async analyze(page) → returns array of fields:
+  [{ selector, type, name, placeholder }]
+  Type classification: email | password | search | id | price | date |
+                       file | text | textarea | hidden
+  Used by FieldFuzzer to pick correct payload set per field type.
+
+PayloadLibrary.js:
+  Loads payload text files from payloads/ directory.
+  getPayloads(fieldType) → returns array of strings.
+  Field type to payload mapping:
+  - text/search: XSS payloads + SQLi payloads
+  - email: email injection payloads
+  - id/price: negative numbers, 0, MAX_INT, SQL injection
+  - file: path traversal payloads (for file name fields)
+  - date: invalid dates, far-future dates, SQL date injection
+  Payload files from SecLists (already downloaded to payloads/ folder).
+
+B8. Security Scanner
+
+[PROMPT]
+Build the security scanner modules for DOCKIUM.
+
+Files:
+  core/scanner/ScanOrchestrator.js
+  core/scanner/ApiScanner.js
+  core/scanner/AuthScanner.js
+  core/scanner/InputScanner.js
+  core/scanner/InfraScanner.js
+  core/scanner/SecretsScanner.js
+  core/scanner/DependencyScanner.js
+  core/scanner/DbScanner.js
+
+ScanOrchestrator.js:
+  The master scanner that coordinates all modules.
+
+  async runFullScan(config):
+  - config: { targetUrl, routes, repoPath, dbType, fast: boolean }
+  - Runs all scanner modules in parallel where possible
+  - Emits progress via WebSocket: { type: 'scan_progress', phase, percent }
+  - Aggregates all findings into a single array
+  - Calls SeverityScorer.score(findings) on completion
+  - Returns { findings, summary, durationMs }
+
+  async runFastScan(config, changedFiles, newRoutes):
+  - Only runs scanners relevant to changed files
+  - InfraScanner always runs (fast, < 10s)
+  - ApiScanner only runs against newRoutes
+  - SecretsScanner runs against the diff, not full repo
+
+ApiScanner.js:
+  async scan(routes, targetUrl):
+  For each route, sends attack payloads using node-fetch:
+  - SQL injection: payloads from payloads/sqli.txt
+  - XSS: payloads from payloads/xss.txt
+  - Mass assignment: extra fields not in the API contract
+  - Path traversal: payloads from payloads/path-traversal.txt
+  Detection: error strings in response body, unexpected 200 on POST,
+             database error patterns, reflected payload in response.
+  Returns array of findings.
+
+AuthScanner.js:
+  async scan(routes, targetUrl, sessions):
+  - IDOR test: for each GET /{resource}/{id} route, iterate IDs 1-100
+    as unauthenticated user. 200 = potential IDOR finding.
+  - Auth bypass: remove or forge Authorization header on protected routes.
+    200 response = finding.
+  - JWT manipulation: modify role claim in JWT payload, re-encode without
+    valid signature, retry request. 200 = finding.
+  - Privilege escalation: use low-privilege token on admin endpoints.
+
+InputScanner.js:
+  Drives FieldFuzzer. See B7 FieldFuzzer.js.
+  Also handles:
+  - Business logic: negative quantities, zero prices, step-skipping
+    in multi-step flows (order checkout etc.)
+  - Form resubmission: submit same form twice, check for duplicate records
+
+InfraScanner.js:
+  async scan(targetUrl):
+  - Check response headers: CSP, HSTS, X-Frame-Options, X-Content-Type-Options
+    Missing header = MEDIUM finding per header.
+  - Check for exposed .env: GET /.env, GET /.env.local, GET /.env.production
+    200 = CRITICAL finding.
+  - Check for debug endpoints: GET /debug, GET /__debug__, GET /api/debug
+  - Check for stack traces: any 500 response containing 'at Object.' or 'Traceback'
+  - Check rate limiting on: /api/auth/login, /api/auth/reset-password
+    Send 50 requests in 5 seconds. No 429 response = MEDIUM finding.
+
+SecretsScanner.js:
+  async scanRepo(repoPath):
+  - Read patterns from payloads/secrets-patterns.txt
+    (regex patterns for AWS keys, GitHub tokens, Stripe keys, etc.)
+  - Run patterns against all source files in repo (not node_modules/)
+  - Also run against git log: execSync('git log -p --all', { cwd: repoPath })
+  - Each match = HIGH finding with file path and line number
+
+  async scanDiff(diffString):
+  - Run same patterns against a git diff string only (for fast scan mode)
+
+DependencyScanner.js:
+  async scan(repoPath, frameworkInfo):
+  - Read dependencies from package.json / requirements.txt
+  - Query OSV.dev API (open source, free): https://api.osv.dev/v1/query
+  - For each dependency with a CVE: create MEDIUM or HIGH finding
+    based on CVE CVSS score
+
+DbScanner.js:
+  async scan(dbConfig):
+  - Connects to the DB container directly
+  - Check: are passwords stored as plaintext? (sample users table, check hash format)
+  - Check: are there columns named 'password', 'secret', 'token' without hashing?
+  - Check: are any sensitive fields logged? (check logs table if exists)
+  - Check: are there SQL stored procedures with dynamic SQL?
+  Returns findings with table and column references.
+
+B9. Git Middleware
+
+[PROMPT]
+Build the Git middleware system for DOCKIUM.
+
+Files:
+  core/git/GitHookInstaller.js
+  core/git/GitGate.js
+  core/git/DiffAnalyzer.js
+  core/git/RemoteForwarder.js
+
+GitHookInstaller.js:
+  async install(repoPath):
+  - Writes a pre-push hook to {repoPath}/.git/hooks/pre-push
+  - Makes it executable (chmod +x)
+  - The hook calls: dockium-gate (a CLI entry point in the DOCKIUM binary)
+    which sends an IPC message to the running DOCKIUM app to start gate check
+  - If DOCKIUM is not running: hook fails with message 'Start DOCKIUM first'
+
+  Hook content (shell script):
+    #!/bin/sh
+    exec dockium gate-check "$@"
+    # Exits 0 (allow push) or 1 (block push) based on DOCKIUM gate result
+
+  async remove(repoPath): deletes the hook file
+  async isInstalled(repoPath): returns boolean
+
+GitGate.js:
+  The main gate logic. Called when a git push is intercepted.
+
+  async check(repoPath, pushRef, remoteUrl):
+  Step 1: Get diff
+    → DiffAnalyzer.analyze(repoPath, pushRef)
+    → Returns { changedFiles, newRoutes, removedRoutes, diffString }
+
+  Step 2: Run fast scan
+    → ScanOrchestrator.runFastScan(config, changedFiles, newRoutes)
+    → Stream findings live to DOCKIUM UI via WebSocket
+
+  Step 3: Run secrets scan on diff
+    → SecretsScanner.scanDiff(diffString)
+
+  Step 4: Run existing test suite
+    → execSync(testCommand, { cwd: repoPath, timeout: 120000 })
+    → Capture exit code and output
+
+  Step 5: Apply gate rules (from settings)
+    → If critical findings and block-on-critical = ON: block
+    → If secrets found and block-on-secrets = ON: block
+    → If tests failed and block-on-test-failure = ON: block
+
+  Step 6: Record result
+    → Append to push history (stored in electron-store)
+    → { timestamp, branch, commitSha, result, findings, durationMs }
+
+  Step 7: Return { allowed: boolean, reason: string }
+    → If allowed: RemoteForwarder.forward(repoPath, remoteUrl, pushRef)
+    → If blocked: emit WebSocket event with block reason + findings
+
+DiffAnalyzer.js:
+  async analyze(repoPath, pushRef):
+  - Run: git diff {pushRef} HEAD -- (using simple-git)
+  - Parse changed files: extract list of modified/added/deleted files
+  - New routes: cross-reference with RouteExtractor on changed route files
+  - Returns: { changedFiles, newRoutes, diffString, commitSha, commitMessage }
+
+RemoteForwarder.js:
+  async forward(repoPath, remoteUrl, ref):
+  - Uses simple-git to push to the real remote
+  - Equivalent to: git push {remoteUrl} {ref}
+  - Emits WebSocket event: 'push forwarded to {remoteUrl}'
+  - Returns { success, output }
+
+B10. Report Generator
+
+[PROMPT]
+Build the report generation system for DOCKIUM.
+
+Files:
+  core/report/ReportBuilder.js
+  core/report/SeverityScorer.js
+  core/report/exporters/PdfExporter.js
+  core/report/exporters/MarkdownExporter.js
+  core/report/exporters/JsonExporter.js
+
+SeverityScorer.js:
+  score(findings) → returns findings with severity assigned:
+  Severity rules:
+  - CRITICAL: SQLi, auth bypass, secrets exposed, unauthenticated admin access
+  - HIGH: IDOR, XSS, SSRF, path traversal with file read
+  - MEDIUM: missing security headers, rate limiting absent, info disclosure
+  - LOW: verbose error messages, missing X-Content-Type-Options
+  - INFO: informational findings (open port, accessible endpoint)
+  Also computes CVSS-like score 0.0-10.0 per finding.
+
+ReportBuilder.js:
+  async build(scanResult, projectInfo, appMap):
+  Assembles the full report object:
+  {
+    meta: { timestamp, duration, projectName, framework, scanMode },
+    summary: { total, bySeverity, owaspCoverage },
+    appMap: { folderTree, routeTree, apiGraph },
+    findings: [ /* scored, sorted by severity */ ],
+    owaspChecklist: [ /* A01-A10 with pass/fail/partial */ ],
+    remediationChecklist: [ /* ordered by severity */ ],
+    scanComparison: { vs: lastScanTimestamp, improved, regressed, new }
+  }
+
+  OWASP mapping logic:
+  - A01 Broken Access Control: any IDOR, auth bypass, privilege escalation finding
+  - A03 Injection: any SQLi, XSS, command injection finding
+  - A05 Security Misconfiguration: missing headers, exposed .env, debug endpoints
+  - A06 Vulnerable Components: any CVE finding from DependencyScanner
+  If at least one module covered the category = TESTED. Finding = FAIL. No finding = PASS.
+
+PdfExporter.js:
+  Uses PDFKit (npm: pdfkit).
+  async export(reportObject, outputPath):
+  - Cover page: DOCKIUM, project name, date
+  - Table of contents (auto-generated with page numbers)
+  - Executive Summary section
+  - Each finding as a block: severity badge, endpoint, description, PoC, fix
+  - OWASP checklist table
+  - Remediation checklist
+  Font: Courier (monospace for all text, consistent with app aesthetic)
+  Colors: only red/yellow/green for severity labels, black text otherwise
+  Page size: A4. Margins: 50px all sides.
+
+MarkdownExporter.js:
+  async export(reportObject, outputPath):
+  Generates a Markdown file. Useful for GitHub issues / PR comments.
+  Uses standard ATX headings, code blocks for PoC examples.
+
+JsonExporter.js:
+  async export(reportObject, outputPath):
+  Writes the full report object as formatted JSON.
+  Useful for piping into issue trackers (Jira, Linear, GitHub Issues).
+
+B11. Real-Time WebSocket Server
+
+[PROMPT]
+Build the WebSocket server for DOCKIUM real-time UI updates.
+
+File: core/realtime/WebSocketServer.js
+
+Uses 'ws' npm package (not Socket.io - keep it minimal).
+
+class WebSocketServer:
+  constructor(port = 4242)
+  start(): starts ws.Server, accepts connections from Electron renderer
+  stop(): closes all connections and server
+
+  emit(type, data):
+  - Broadcasts to all connected clients
+  - Message format: JSON.stringify({ type, timestamp: Date.now(), data })
+  - type values used throughout the app:
+    'log'             - { level: 'info'|'warn'|'error', message }
+    'request'         - captured proxy request object
+    'finding'         - { finding: FindingObject, scanPhase }
+    'scan_progress'   - { phase, percent, phaseName }
+    'scan_complete'   - { summary }
+    'container'       - { name, status, cpu, mem }
+    'fleet'           - { sessionId, role, event, data }
+    'gate_result'     - { allowed, reason, findings }
+
+  emitLog(message, level = 'info'):
+  - Shorthand for emit('log', { message, level })
+  - Also writes to winston logger
+
+Singleton pattern: export a single instance.
+Used by all other modules: import { wss } from './WebSocketServer.js'
+
+Client side (in preload.js / renderer):
+  const ws = new WebSocket('ws://localhost:4242');
+  ws.onmessage = (event) => {
+    const { type, data } = JSON.parse(event.data);
+    // dispatch to appropriate Zustand store action
+  };
+
+Reconnection: renderer auto-reconnects on disconnect with 2s backoff.
+
+B12. State Stores (Zustand)
+
+[PROMPT]
+Build all Zustand state stores for the DOCKIUM renderer.
+
+Files:
+  renderer/store/containerStore.js
+  renderer/store/scanStore.js
+  renderer/store/proxyStore.js
+  renderer/store/mapStore.js
+  renderer/store/fleetStore.js
+  renderer/store/gitStore.js
+  renderer/store/settingsStore.js
+
+containerStore.js:
+  State: { containers: [], projectInfo: null, isRunning: false }
+  Actions:
+    setContainers(containers)
+    setProjectInfo(info)
+    updateContainerStatus(name, status)
+  Hydration: on app start, calls window.dockium.docker.getStatus()
+  WebSocket listener: updates on 'container' events
+
+scanStore.js:
+  State: { findings: [], phase: 'idle', percent: 0, isScanning: false,
+           summary: null, history: [] }
+  Actions:
+    addFinding(finding)
+    setPhase(phase, percent)
+    setScanComplete(summary)
+    clearFindings()
+    setHistory(history)
+  Computed (derived): findingsBySeverity, criticalCount, highCount
+  WebSocket listener: updates on 'finding' and 'scan_progress' events
+
+proxyStore.js:
+  State: { requests: [], selectedId: null, isRunning: false, filter: '' }
+  Actions:
+    addRequest(request)
+    selectRequest(id)
+    setFilter(filter)
+    clearRequests()
+    updateRequestFlag(id, flag)
+  Computed: filteredRequests (by filter string on path)
+  Max 10,000 requests (ring buffer: if > 10000, remove oldest)
+  WebSocket listener: adds on 'request' events
+
+mapStore.js:
+  State: { folderTree: [], routeTree: [], apiGraph: [], isLoaded: false }
+  Actions:
+    setFolderTree(tree)
+    setRouteTree(routes)
+    setApiGraph(graph)
+  Hydration: loaded after ingestion completes
+
+fleetStore.js:
+  State: { sessions: [], isRunning: false, activityLog: [] }
+  Session object: { id, role, status, currentUrl, requestCount, findings, lastAction }
+  Actions:
+    setSessions(sessions)
+    updateSession(id, patch)
+    addActivityLog(entry)
+  WebSocket listener: updates on 'fleet' events
+
+gitStore.js:
+  State: { isInstalled: false, pushHistory: [], gateRules: {}, lastGateResult: null }
+  Actions:
+    setInstalled(bool)
+    addPushResult(result)
+    setGateRules(rules)
+    setGateResult(result)
+  Hydration: on app start, calls window.dockium.git.getGateStatus()
+
+settingsStore.js:
+  State: full settings object mirroring electron-store values
+  Actions: setSetting(key, value) - calls window.dockium.settings.set(key, value)
+  Hydration: loads from window.dockium.settings.getAll() on start
+
+All stores: use zustand/middleware persist for crash recovery where appropriate.
+Pattern for all stores:
+  import { create } from 'zustand'
+  export const useContainerStore = create((set, get) => ({ ... }))
+
+
+
+C. DATABASE LAYER
+
+C1. Schema Cloner + Data Seeder
+
+[PROMPT]
+Build the database layer for DOCKIUM.
+
+Files:
+  core/db/SchemaCloner.js
+  core/db/DataSeeder.js
+  core/db/adapters/postgres.js
+  core/db/adapters/mysql.js
+
+SchemaCloner.js:
+  async clone(repoPath, frameworkInfo):
+  - Detects ORM type from frameworkInfo.ormType
+  - For Prisma: reads prisma/schema.prisma, parses model definitions
+    → Converts Prisma schema to PostgreSQL DDL SQL
+  - For Sequelize / TypeORM migrations: reads migration files,
+    extracts CREATE TABLE statements
+  - For Django: runs 'python manage.py sqlmigrate' in the app container
+  - For Rails: runs 'rails db:schema:dump' in the app container
+  - Applies DDL to the db container via adapter
+  - Returns: { tables: [{ name, columns: [{ name, type, nullable }] }] }
+
+DataSeeder.js:
+  async seed(tables, dbConfig):
+  - Uses @faker-js/faker to generate realistic data
+  - For each table: generates 50 records (configurable)
+  - Column name heuristics for Faker mapping:
+    first_name → faker.person.firstName()
+    last_name  → faker.person.lastName()
+    email      → faker.internet.email()
+    password   → bcrypt.hash('Password123!', 10) (always hashed)
+    phone      → faker.phone.number()
+    address    → faker.location.streetAddress()
+    created_at → faker.date.past()
+    price      → faker.commerce.price()
+    title      → faker.lorem.sentence(3)
+    body/content → faker.lorem.paragraphs(2)
+    uuid/id    → faker.string.uuid()
+    role       → 'user' (first 45 records), 'admin' (last 5)
+  - Respects foreign key order (seed parent tables first)
+  - Returns: { recordsInserted, tablesCovered }
+
+postgres.js adapter:
+  async connect(dbConfig): returns pg Client
+  async exec(client, sql): executes SQL, returns rows
+  async disconnect(client)
+
+mysql.js adapter:
+  Same interface, uses mysql2 package.
+
+
+
+D. FINAL INTEGRATION PROMPT
+
+Run this prompt last, after all individual modules are built.
+
+[PROMPT]
+You have built all modules of DOCKIUM individually.
+Now wire everything together for a complete working application.
+
+Integration checklist:
+
+1. Electron main.js imports and initializes:
+   - WebSocketServer (start on app ready)
+   - ContainerManager (start/stop on IPC)
+   - ProxyServer (start/stop on IPC)
+   - GitGate (responds to gate-check IPC from CLI hook)
+   - All IPC handlers in electron/ipc/
+
+2. App.jsx connects WebSocket on mount:
+   - Dispatches incoming messages to correct Zustand store
+   - Reconnects on disconnect (2s backoff, max 10 retries)
+
+3. Onboarding.jsx triggers Ingestion.js pipeline via IPC:
+   window.dockium.project.open(path) → returns projectInfo
+   Navigation to Dashboard on success
+
+4. Dashboard loads live data:
+   - containerStore hydration via docker.getStatus() IPC on mount
+   - scanStore loads last scan history on mount
+
+5. Proxy view starts/stops ProxyServer via IPC:
+   Status bar proxy toggle calls window.dockium.proxy.start() / stop()
+
+6. Scanner view start button:
+   window.dockium.scan.start(config) → backend runs ScanOrchestrator
+   Findings stream via WebSocket to scanStore
+
+7. Git gate toggle in GitGate.jsx:
+   window.dockium.git.installHook(repoPath) / removeHook(repoPath)
+
+8. Report export buttons:
+   window.dockium.report.exportPdf() → opens save dialog, calls PdfExporter
+
+9. App cleanup on quit:
+   before-quit event → ContainerManager.stopAll()
+   → ProxyServer.stop()
+   → WebSocketServer.stop()
+
+10. Add electron-builder config for packaging:
+    - Mac: .dmg + .app
+    - Windows: .exe installer (NSIS)
+    - Linux: .AppImage
+    - Include: Docker templates, payload files (SecLists subset)
+    - Exclude: node_modules dev dependencies, .git
+
+Provide the final package.json with all dependencies and build scripts.
+Provide electron-builder.yml config.
+Provide the full updated main.js showing all initializations.
+
+
+
+E. APPENDIX - TECH STACK REFERENCE
+
+Core Dependencies
+electron                   ^28.0.0   Desktop shell
+react                      ^18.0.0   UI framework
+react-router-dom           ^6.0.0    Client-side routing
+zustand                    ^4.0.0    State management
+dockerode                  ^4.0.0    Docker Engine API
+http-mitm-proxy            ^0.9.0    Intercepting proxy
+playwright                 ^1.40.0   Browser automation
+simple-git                 ^3.0.0    Git operations
+@faker-js/faker            ^8.0.0    Test data generation
+pdfkit                     ^0.15.0   PDF generation
+ws                         ^8.0.0    WebSocket server
+winston                    ^3.0.0    Logging
+electron-store             ^8.0.0    Persistent settings
+node-fetch                 ^3.0.0    HTTP client for scanners
+pg                         ^8.0.0    PostgreSQL client
+mysql2                     ^3.0.0    MySQL client
+bcrypt                     ^5.0.0    Password hashing in seeder
+
+Container Images
+owasp/zap2docker-stable   ZAP scanner container
+node:18-alpine            App container (Node.js projects)
+python:3.11-slim          App container (Python projects)
+postgres:15-alpine        Database container
+mysql:8.0                 Database container (MySQL projects)
+
+Project Folder Structure
+dockium/
+├── electron/              Electron shell
+│   ├── main.js
+│   ├── preload.js
+│   └── ipc/
+├── renderer/              React UI
+│   ├── App.jsx
+│   ├── pages/
+│   ├── components/
+│   └── store/
+├── core/                  Node.js backend daemon
+│   ├── orchestrator/
+│   ├── detector/
+│   ├── docker-templates/
+│   ├── proxy/
+│   ├── scanner/
+│   ├── browser/
+│   ├── db/
+│   ├── git/
+│   ├── mapper/
+│   ├── report/
+│   └── realtime/
+├── containers/            DOCKIUM's own Dockerfiles
+├── payloads/              SecLists attack payload files
+└── package.json
+
+
+
+DOCKIUM - Build Document v1.0
+Renamed from SENTINEL. All architecture and modules unchanged.
+
+
+F. IMPLEMENTATION TODO TRACKER (AUTO)
+
+[DONE]    B1 Electron Shell + IPC Bridge
+[DONE]    B2 Docker Orchestrator (ContainerManager + NetworkManager + HealthMonitor)
+[DONE]    B3 Framework Detector + Dockerfile Generator
+[DONE]    B4 App Ingestion Pipeline (core/ingestion/Ingestion.js)
+[DONE]    B5 Discovery Engine (mapper modules + scanner integration)
+[DONE]    B6 Proxy Engine (ProxyServer/RequestCapture/RequestModifier/ZapBridge)
+[DONE]    B7 Browser Fleet + Role Agents + Browser-use orchestrator
+[DONE]    B8 Security Scanner modules (Api/Auth/Input/Infra/Secrets/Dependency/Db)
+[DONE]    B9 Git Middleware (GitGate + DiffAnalyzer + RemoteForwarder)
+[DONE]    B10 Report Generator pipeline (ReportBuilder + exporters)
+[DONE]    B11 Real-Time WebSocket Server
+[DONE]    B12 Zustand State Stores (renderer/store)
+[DONE]    C1 Database Layer (SchemaCloner + DataSeeder + adapters)
+[DONE]    D  Final Integration Prompt (all required wiring completed)
+
+For per-prompt verification details, see: DOCKIUM-Implementation-Status.txt

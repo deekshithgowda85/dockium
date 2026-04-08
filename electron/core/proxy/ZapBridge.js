@@ -39,6 +39,35 @@ class ZapBridge {
     return `http://${raw}`
   }
 
+  async retryWithBackoff(operation, maxRetries = 5, initialDelayMs = 1000) {
+    let lastError = null
+    for (let attempt = 0; attempt < maxRetries; attempt += 1) {
+      try {
+        return await operation()
+      } catch (error) {
+        lastError = error
+        const code = String(error?.code || '').toUpperCase()
+        const status = Number(error?.response?.status || 0)
+        
+        // Retry on connection errors and 5xx server errors
+        const shouldRetry = code === 'ECONNREFUSED' 
+          || code === 'ECONNRESET' 
+          || code === 'ECONNABORTED'
+          || code === 'ETIMEDOUT'
+          || code === 'SOCKET_HANG_UP'
+          || status >= 500
+        
+        if (!shouldRetry || attempt === maxRetries - 1) {
+          throw error
+        }
+
+        const delayMs = initialDelayMs * Math.pow(2, attempt)
+        await new Promise((resolve) => setTimeout(resolve, delayMs))
+      }
+    }
+    throw lastError
+  }
+
   buildTargetCandidates(targetUrl) {
     const normalized = this.normalizeTargetUrl(targetUrl)
     if (!normalized) {
@@ -65,12 +94,16 @@ class ZapBridge {
 
   async primeTarget(candidateUrl) {
     try {
-      await axios.get(`${this.baseUrl}/JSON/core/action/accessUrl/`, {
-        params: { url: candidateUrl, followRedirects: true, apikey: this.apiKey },
-        timeout: 8000,
-      })
+      await this.retryWithBackoff(
+        () => axios.get(`${this.baseUrl}/JSON/core/action/accessUrl/`, {
+          params: { url: candidateUrl, followRedirects: true, apikey: this.apiKey },
+          timeout: 15000,
+        }),
+        3,
+        800
+      )
     } catch {
-      // Priming is best-effort; active scan call below decides final viability.
+      // Priming is best-effort; active scan call below decides final viability
     }
   }
 
@@ -86,15 +119,19 @@ class ZapBridge {
     for (const candidateUrl of candidates) {
       try {
         await this.primeTarget(candidateUrl)
-        const response = await axios.get(`${this.baseUrl}/JSON/ascan/action/scan/`, {
-          params: {
-            url: candidateUrl,
-            recurse: true,
-            inScopeOnly: false,
-            apikey: this.apiKey,
-          },
-          timeout: 12000,
-        })
+        const response = await this.retryWithBackoff(
+          () => axios.get(`${this.baseUrl}/JSON/ascan/action/scan/`, {
+            params: {
+              url: candidateUrl,
+              recurse: true,
+              inScopeOnly: false,
+              apikey: this.apiKey,
+            },
+            timeout: 20000,
+          }),
+          5,
+          1500
+        )
         return {
           scanId: String(response.data.scan || ''),
           targetUrl: candidateUrl,
@@ -118,10 +155,14 @@ class ZapBridge {
 
   async getScanProgress(scanId) {
     try {
-      const response = await axios.get(`${this.baseUrl}/JSON/ascan/view/status/`, {
-        params: { scanId, apikey: this.apiKey },
-        timeout: 8000,
-      })
+      const response = await this.retryWithBackoff(
+        () => axios.get(`${this.baseUrl}/JSON/ascan/view/status/`, {
+          params: { scanId, apikey: this.apiKey },
+          timeout: 15000,
+        }),
+        3,
+        800
+      )
       return Number(response.data.status || 0)
     } catch (error) {
       throw this.normalizeError(error, 'fetching active scan status')
@@ -130,10 +171,14 @@ class ZapBridge {
 
   async getAlerts() {
     try {
-      const response = await axios.get(`${this.baseUrl}/JSON/core/view/alerts/`, {
-        params: { apikey: this.apiKey },
-        timeout: 8000,
-      })
+      const response = await this.retryWithBackoff(
+        () => axios.get(`${this.baseUrl}/JSON/core/view/alerts/`, {
+          params: { apikey: this.apiKey },
+          timeout: 15000,
+        }),
+        3,
+        800
+      )
       return (response.data.alerts || []).map((alert) => ({
         severity: Number(alert.riskcode || 0) >= 3 ? 'critical' : Number(alert.riskcode || 0) >= 2 ? 'high' : 'medium',
         name: alert.name,

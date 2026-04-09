@@ -453,10 +453,11 @@ DOCKIUM_TARGET=http://localhost:${config.project.appPort}
           status: info.State.Status,
           ports: Object.keys(info.NetworkSettings?.Ports || {}),
           cpu: parseFloat(cpu),
-          memMB: mem
+          memMB: mem,
+          createdAt: info.Created || new Date().toISOString()
         })
       } catch (_) {
-        results.push({ name, status: 'stopped', cpu: 0, memMB: 0 })
+        results.push({ name, status: 'stopped', cpu: 0, memMB: 0, createdAt: new Date().toISOString() })
       }
     }
 

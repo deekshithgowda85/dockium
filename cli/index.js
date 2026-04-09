@@ -34,9 +34,11 @@ program
 program
   .command('gate-check')
   .description('Run gate check (used by git hook)')
+  .option('--warn-only', 'do not block on gate policy findings')
+  .option('--enforce-gate', 'strict mode: block when gate policy fails')
   .argument('[gitArgs...]', 'ignored git hook arguments')
-  .action(async () => {
-    await gateCheck()
+  .action(async (options) => {
+    await gateCheck(options)
   })
 
 program.parseAsync(process.argv).catch((error) => {

@@ -2282,6 +2282,7 @@ function createSplashWindow() {
     show: false,
     backgroundColor: "#ffffff",
     autoHideMenuBar: true,
+    icon: path.join(__dirname, "assets", "dockium.ico"),
   });
 
   splashWindow.loadFile(path.join(__dirname, "splash.html"));
@@ -2312,6 +2313,7 @@ function createWindow() {
     show: false,
     backgroundColor: "#ffffff",
     autoHideMenuBar: true,
+    icon: path.join(__dirname, "assets", "dockium.ico"),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,

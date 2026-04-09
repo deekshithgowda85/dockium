@@ -28,17 +28,34 @@ function toDuration(durationMs) {
 }
 
 function normalizeFinding(finding) {
+  const statusCode = Number(
+    finding.statusCode
+      ?? finding.responseStatus
+      ?? finding.httpStatus
+      ?? 0,
+  );
+  const cvssValue = Number(finding.cvss ?? finding.cvssScore ?? 0);
+
   return {
     id: finding.id || `f-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
     severity: String(finding.severity || "info").toLowerCase(),
     title: finding.title || finding.name || "Untitled finding",
     endpoint: finding.endpoint || finding.url || "Unknown endpoint",
-    payload: finding.payload || "n/a",
-    response: finding.response || "n/a",
-    proof: finding.proof || finding.description || "No proof provided",
-    fix: finding.fix || finding.solution || "No fix provided",
-    request: finding.request || "n/a",
-    what: finding.description || "No description provided",
+    method: String(finding.method || finding.httpMethod || "GET").toUpperCase(),
+    module: finding.module || finding.scanner || finding.source || "scanner",
+    category: finding.category || finding.type || "security",
+    cwe: finding.cwe || finding.cweId || "",
+    cve: finding.cve || finding.cveId || "",
+    cvss: Number.isFinite(cvssValue) && cvssValue > 0 ? cvssValue.toFixed(1) : "",
+    confidence: String(finding.confidence || finding.certainty || "medium").toLowerCase(),
+    statusCode: Number.isFinite(statusCode) && statusCode > 0 ? statusCode : 0,
+    payload: finding.payload || finding.attackPayload || "n/a",
+    response: finding.response || finding.responseBody || "n/a",
+    proof: finding.proof || finding.evidence || finding.description || "No proof provided",
+    fix: finding.fix || finding.solution || finding.recommendation || "No fix provided",
+    request: finding.request || finding.requestRaw || "n/a",
+    timestamp: String(finding.timestamp || finding.createdAt || new Date().toISOString()),
+    what: finding.description || finding.summary || "No description provided",
   };
 }
 

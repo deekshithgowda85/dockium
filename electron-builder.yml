@@ -16,6 +16,7 @@ extraMetadata:
   main: electron/main.cjs
 asar: true
 win:
+  icon: assets/dockium.ico
   target:
     - target: nsis
       arch:

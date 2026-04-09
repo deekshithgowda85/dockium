@@ -351,6 +351,7 @@ export default function AppMap() {
   const [activeTab, setActiveTab] = React.useState("files");
   const [apiSubTab, setApiSubTab] = React.useState("auth");
   const [showOpenApiDebug, setShowOpenApiDebug] = React.useState(false);
+  const authAutoRefreshRunRef = React.useRef("");
   const bootScanTriggered = React.useRef(false);
   const [projectInfo, setProjectInfo] = React.useState(null);
   const hasProjectContext = Boolean(projectInfo?.projectPath);
@@ -396,6 +397,11 @@ export default function AppMap() {
   const updateTestDraft = useMapStore((state) => state.updateTestDraft);
   const runRouteTest = useMapStore((state) => state.runRouteTest);
   const runAuthRouteChecks = useMapStore((state) => state.runAuthRouteChecks);
+
+  const runPostLoginRouteScan = React.useCallback(async () => {
+    setApiSubTab("routes");
+    await refresh();
+  }, [refresh]);
 
   React.useEffect(() => {
     hydrate();
@@ -444,6 +450,28 @@ export default function AppMap() {
       mounted = false;
     };
   }, [scanStatus.completedAt]);
+
+  React.useEffect(() => {
+    if (authRouteChecks.loading) {
+      return;
+    }
+
+    const workflow = authRouteChecks?.workflow;
+    const hasAuthArtifact = Boolean(workflow?.authArtifact?.token || workflow?.authArtifact?.cookie || appliedToken);
+    const authPassed = Boolean(workflow?.register?.ok && workflow?.login?.ok && hasAuthArtifact);
+    if (!authPassed) {
+      return;
+    }
+
+    const runId = String(authRouteChecks?.lastRunAt || "");
+    if (!runId || authAutoRefreshRunRef.current === runId) {
+      return;
+    }
+
+    authAutoRefreshRunRef.current = runId;
+    setApiSubTab("routes");
+    refresh();
+  }, [appliedToken, authRouteChecks, refresh]);
 
   const attachSourceFolder = React.useCallback(async () => {
     const browse = window.dockium?.onboardingBrowseProject;
@@ -782,6 +810,14 @@ export default function AppMap() {
                   <div className="appmap-auth-test-actions">
                     <button type="button" className="appmap-inline-btn" onClick={runAuthRouteChecks} disabled={authRouteChecks.loading}>
                       {authRouteChecks.loading ? "Testing..." : "Test Login/Register"}
+                    </button>
+                    <button
+                      type="button"
+                      className="appmap-inline-btn"
+                      onClick={runPostLoginRouteScan}
+                      disabled={loading || scanStatus.active || authRouteChecks.loading}
+                    >
+                      {loading || scanStatus.active ? "Scanning..." : "Scan Routes/API Now"}
                     </button>
                     <button type="button" className="appmap-inline-btn" onClick={() => openFirstAuthRoute("login")} disabled={!authSurface.loginUiUrl}>
                       Open Login

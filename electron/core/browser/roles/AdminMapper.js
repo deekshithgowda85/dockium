@@ -5,9 +5,23 @@ class AdminMapper {
     this.adminRoutes = []
   }
 
+  isUiRoute(route) {
+    const method = String(route?.method || 'GET').toUpperCase()
+    if (method !== 'GET' && method !== 'HEAD') {
+      return false
+    }
+
+    const pathValue = String(route?.path || '').toLowerCase()
+    if (!pathValue || pathValue === '/api' || pathValue === '/rest' || pathValue.startsWith('/api/') || pathValue.startsWith('/rest/')) {
+      return false
+    }
+
+    return !/\.(json|xml|js|css|png|jpe?g|gif|svg|ico|woff2?|ttf|map)$/i.test(pathValue)
+  }
+
   async run(routes = []) {
     const target = this.config.project.targetUrl
-    const candidates = routes.filter((route) => /admin/i.test(route.path || ''))
+    const candidates = routes.filter((route) => this.isUiRoute(route) && /admin/i.test(route.path || ''))
 
     if (candidates.length === 0) {
       await this.session.navigate(target)

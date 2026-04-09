@@ -43,6 +43,26 @@ async function maybeAutoCommit(git, options = {}) {
   }
 }
 
+function emitAndExit(bridge, payload = {}, message = '') {
+  if (message) {
+    console.error(message)
+  }
+  bridge.emit('gitgate:result', {
+    timestamp: new Date().toISOString(),
+    branch: String(payload?.branch || 'unknown'),
+    commitSha: 'unknown',
+    commitMessage: 'precondition failed',
+    changedFiles: [],
+    findings: [],
+    testsPassed: false,
+    durationMs: 0,
+    blocked: true,
+    allowed: false,
+    reason: String(payload?.reason || message || 'Precondition failed'),
+  })
+  process.exit(1)
+}
+
 function isReportArtifactPath(filePath = '') {
   const normalized = String(filePath || '').replace(/\\/g, '/').trim().toLowerCase()
   if (!normalized) {
@@ -132,14 +152,59 @@ async function push(options = {}) {
 
   const git = simpleGit(repoPath)
   try {
-    const autoCommitResult = await maybeAutoCommit(git, options)
+    let autoCommitResult
+    try {
+      autoCommitResult = await maybeAutoCommit(git, options)
+    } catch (error) {
+      const detail = String(error?.message || error)
+      bridge.emit('gitgate:log', {
+        timestamp: new Date().toISOString(),
+        level: 'error',
+        step: 'pre-push',
+        message: `Unable to evaluate/commit working tree: ${detail}`,
+      })
+      emitAndExit(bridge, {
+        branch,
+        reason: `Unable to evaluate/commit working tree: ${detail}`,
+      }, `[DOCKIUM] Cannot continue: ${detail}`)
+      return
+    }
+
     if (autoCommitResult.committed) {
       console.log(`[DOCKIUM] Auto-committed changes: ${autoCommitResult.commit || 'new commit created'} (${autoCommitResult.commitMessage})`)
     } else if (autoCommitResult.dirty && !autoCommit) {
-      console.warn('[DOCKIUM] Working tree has uncommitted changes. Commit them first, or use --auto-commit.')
+      const detail = 'Working tree has uncommitted changes. Commit them first, or use --auto-commit.'
+      bridge.emit('gitgate:log', {
+        timestamp: new Date().toISOString(),
+        level: 'error',
+        step: 'pre-push',
+        message: detail,
+      })
+      emitAndExit(bridge, {
+        branch,
+        reason: detail,
+      }, `[DOCKIUM] ${detail}`)
+      return
     }
 
-    const aheadCount = await getAheadCount(git, remote, branch)
+    let aheadCount = 0
+    try {
+      aheadCount = await getAheadCount(git, remote, branch)
+    } catch (error) {
+      const detail = String(error?.message || error)
+      bridge.emit('gitgate:log', {
+        timestamp: new Date().toISOString(),
+        level: 'error',
+        step: 'pre-push',
+        message: `Unable to determine ahead/behind state: ${detail}`,
+      })
+      emitAndExit(bridge, {
+        branch,
+        reason: `Unable to determine ahead/behind state: ${detail}`,
+      }, `[DOCKIUM] Cannot continue: Unable to determine branch state (${detail})`)
+      return
+    }
+
     if (aheadCount <= 0) {
       console.log(`[DOCKIUM] No local commits ahead of ${remote}/${branch}. Nothing to push.`)
       bridge.emit('gitgate:log', {

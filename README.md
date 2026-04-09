@@ -96,6 +96,12 @@ Initialize project config + pre-push hook:
 dockium init
 ```
 
+`dockium init` also installs a `post-commit` hook that writes a Markdown commit audit log to `.dockium/logs/` on every commit. Each log includes:
+
+- commit metadata (branch, sha, author, subject, timestamp)
+- full git diff for that commit
+- latest Dockium report snapshot from `.dockium/reports/push-*.json` (if present)
+
 Run gate then push:
 
 ```bash
@@ -135,6 +141,22 @@ Run gate check only (used by git hook):
 ```bash
 dockium gate-check
 ```
+
+`dockium gate-check` is fail-safe by default (warn-only for policy blockers like test failures). It blocks only on execution/runtime errors.
+
+Strict mode:
+
+```bash
+dockium gate-check --enforce-gate
+```
+
+Hook-compatible warn-only mode:
+
+```bash
+dockium gate-check --warn-only
+```
+
+By default, the generated pre-push hook uses `--warn-only` so plain `git push` follows Dockium warn-only policy.
 
 ## End-to-End Validation Path
 

@@ -110,9 +110,11 @@ export default function Scanner() {
     selectedSessionId,
     selectSession,
     activityLog: fleetActivityLog,
+    authCheck,
     setHeadless,
     setUseProxy,
     setWindowCount,
+    checkAuthState,
     startFleet,
     stopFleet,
     hydrate: hydrateFleet,
@@ -166,6 +168,16 @@ export default function Scanner() {
     }
     runFullScan();
   };
+
+  const startFleetWithAuthCheck = React.useCallback(async () => {
+    if (fleetStatus === "RUNNING") {
+      await stopFleet();
+      return;
+    }
+
+    await checkAuthState();
+    await startFleet();
+  }, [checkAuthState, fleetStatus, startFleet, stopFleet]);
 
   const selectedSession = React.useMemo(
     () => sessions.find((session) => session.id === selectedSessionId) ?? sessions[0] ?? null,
@@ -370,9 +382,22 @@ export default function Scanner() {
                 <button className="scanner-start-btn" onClick={runScan} disabled={isScanRunning}>
                   {isScanRunning ? "Scan Running" : "Start Scan"}
                 </button>
-                <button className="scanner-start-btn" onClick={fleetStatus === "RUNNING" ? stopFleet : startFleet}>
+                <button className="scanner-start-btn" onClick={startFleetWithAuthCheck}>
                   {fleetStatus === "RUNNING" ? "Stop Chromium Fleet" : "Start Chromium Fleet"}
                 </button>
+              </div>
+
+              <div className="scanner-line">
+                <span>Fleet Auth Check</span>
+                <strong>
+                  {authCheck?.loading
+                    ? "CHECKING"
+                    : authCheck?.status || "UNKNOWN"}
+                </strong>
+              </div>
+              <div className="scanner-line">
+                <span>Auth Probe</span>
+                <strong>{cleanUiText(authCheck?.detail || "Not checked")}</strong>
               </div>
             </div>
           </article>
@@ -440,8 +465,13 @@ export default function Scanner() {
                     </header>
 
                     <div className="scanner-finding-preview">
-                      <p>Endpoint: {finding.endpoint}</p>
+                      <p>Endpoint: {finding.method} {finding.endpoint}</p>
                       <p>What: {finding.what}</p>
+                      <p>
+                        Module: {cleanUiText(finding.module || "scanner")} | Confidence: {String(finding.confidence || "medium").toUpperCase()}
+                        {finding.statusCode ? ` | HTTP ${finding.statusCode}` : ""}
+                        {finding.cvss ? ` | CVSS ${finding.cvss}` : ""}
+                      </p>
                     </div>
 
                     <button
@@ -452,7 +482,16 @@ export default function Scanner() {
                     </button>
 
                     {isExpanded ? (
-                      <pre className="scanner-finding-detail">{`Payload: ${finding.payload}\nProof: ${finding.proof}\nFix: ${finding.fix}`}</pre>
+                      <pre className="scanner-finding-detail">{`Category: ${cleanUiText(finding.category || "security")}
+Module: ${cleanUiText(finding.module || "scanner")}
+Timestamp: ${finding.timestamp || "n/a"}
+CWE: ${finding.cwe || "n/a"}
+CVE: ${finding.cve || "n/a"}
+CVSS: ${finding.cvss || "n/a"}
+Payload: ${finding.payload}
+Request: ${finding.request}
+Proof: ${finding.proof}
+Fix: ${finding.fix}`}</pre>
                     ) : null}
                   </article>
                 );

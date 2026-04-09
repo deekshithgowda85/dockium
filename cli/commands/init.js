@@ -22,6 +22,7 @@ function ensureLocalExcludeRules(repoPath) {
   const excludePath = path.join(repoPath, '.git', 'info', 'exclude')
   const patterns = [
     '.dockium/reports/',
+    '.dockium/logs/',
     'dockium-report-*.docx',
     'dockium-report-*.pdf',
     'dockium-report-*.md',

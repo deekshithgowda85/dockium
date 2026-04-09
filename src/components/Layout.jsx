@@ -1,8 +1,10 @@
 import React from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import DockiumLogo from "./DockiumLogo";
+import Onboarding from "../pages/Onboarding";
 import { useUiStore } from "../store/uiStore";
 import { useContainerStore } from "../store/containerStore";
+import { useScanStore } from "../store/scanStore";
 
 const SIDEBAR_MIN_WIDTH = 220;
 const SIDEBAR_MAX_WIDTH = 420;
@@ -191,7 +193,10 @@ export default function Layout() {
     initialization,
     toasts,
     removeToast,
+    onboardingModalOpen,
   } = useUiStore();
+  const runFullScan = useScanStore((state) => state.runFullScan);
+  const runQuickScan = useScanStore((state) => state.runQuickScan);
   const hydrateContainers = useContainerStore((state) => state.hydrate);
   const [isMaximized, setIsMaximized] = React.useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = React.useState(false);
@@ -334,7 +339,7 @@ export default function Layout() {
   const handleMenuAction = (action) => {
     switch (action) {
       case "newProject":
-        navigate("/new-project");
+        useUiStore.getState().openOnboardingModal();
         break;
       case "dashboard":
         navigate("/dashboard");
@@ -362,9 +367,13 @@ export default function Layout() {
         break;
       case "fullScan":
         setScanMode("Full Scan");
+        navigate("/scanner");
+        runFullScan();
         break;
       case "quickScan":
         setScanMode("Quick Scan");
+        navigate("/scanner");
+        runQuickScan();
         break;
       case "toggleProxy":
         toggleProxy();
@@ -437,8 +446,26 @@ export default function Layout() {
             <span className="mono-help">Ctrl+K</span>
           </div>
           <div className="titlebar-scan-actions">
-            <button className="btn primary" onClick={() => setScanMode("Full Scan")}>Run Scan</button>
-            <button className="btn" onClick={() => setScanMode("Quick Scan")}>Quick Scan</button>
+            <button
+              className="btn primary"
+              onClick={() => {
+                setScanMode("Full Scan");
+                navigate("/scanner");
+                runFullScan();
+              }}
+            >
+              Run Scan
+            </button>
+            <button
+              className="btn"
+              onClick={() => {
+                setScanMode("Quick Scan");
+                navigate("/scanner");
+                runQuickScan();
+              }}
+            >
+              Quick Scan
+            </button>
           </div>
         </div>
         <div className="titlebar-right no-drag">
@@ -511,6 +538,12 @@ export default function Layout() {
           </div>
         ))}
       </div>
+
+      {onboardingModalOpen ? (
+        <div className="onboarding-overlay">
+          <Onboarding embedded />
+        </div>
+      ) : null}
     </div>
   );
 }

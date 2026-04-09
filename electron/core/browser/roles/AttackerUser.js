@@ -4,9 +4,25 @@ class AttackerUser {
     this.config = config
   }
 
+  isUiRoute(route) {
+    const method = String(route?.method || 'GET').toUpperCase()
+    if (method !== 'GET' && method !== 'HEAD') {
+      return false
+    }
+
+    const pathValue = String(route?.path || '').toLowerCase()
+    if (!pathValue || pathValue === '/api' || pathValue === '/rest' || pathValue.startsWith('/api/') || pathValue.startsWith('/rest/')) {
+      return false
+    }
+
+    return !/\.(json|xml|js|css|png|jpe?g|gif|svg|ico|woff2?|ttf|map)$/i.test(pathValue)
+  }
+
   async run(routes = []) {
     const target = this.config.project.targetUrl
-    if (!Array.isArray(routes) || routes.length === 0) {
+    const uiRoutes = Array.isArray(routes) ? routes.filter((route) => this.isUiRoute(route)) : []
+
+    if (uiRoutes.length === 0) {
       await this.session.navigate(target)
       await this.session.navigate(`${target.replace(/\/$/, '')}/admin`)
       this.session.recordFinding({
@@ -18,7 +34,9 @@ class AttackerUser {
       return
     }
 
-    for (const route of routes.slice(0, 25)) {
+    await this.session.navigate(target)
+
+    for (const route of uiRoutes.slice(0, 30)) {
       const raw = String(route.path || '/')
       const attackPath = raw.includes(':id') ? raw.replace(':id', '2') : raw
       const url = `${target}${attackPath.startsWith('/') ? attackPath : `/${attackPath}`}`

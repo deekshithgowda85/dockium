@@ -6,6 +6,45 @@ function toStatus(value) {
   return String(value || "stopped").toUpperCase();
 }
 
+function formatCreatedTime(isoString) {
+  if (!isoString) return "--";
+  
+  try {
+    const createdDate = new Date(isoString);
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    
+    const createdDay = new Date(createdDate.getFullYear(), createdDate.getMonth(), createdDate.getDate());
+    
+    if (createdDay.getTime() === today.getTime()) {
+      return "Today";
+    } else if (createdDay.getTime() === yesterday.getTime()) {
+      return "Yesterday";
+    } else {
+      // Show relative time for other dates
+      const diffMs = now.getTime() - createdDate.getTime();
+      const diffMins = Math.floor(diffMs / 60000);
+      const diffHours = Math.floor(diffMs / 3600000);
+      const diffDays = Math.floor(diffMs / 86400000);
+      const diffWeeks = Math.floor(diffMs / 604800000);
+      const diffMonths = Math.floor(diffMs / 2592000000);
+      const diffYears = Math.floor(diffMs / 31536000000);
+      
+      if (diffMins < 1) return "Just now";
+      if (diffMins < 60) return `${diffMins}m ago`;
+      if (diffHours < 24) return `${diffHours}h ago`;
+      if (diffDays < 7) return `${diffDays}d ago`;
+      if (diffWeeks < 4) return `${diffWeeks}w ago`;
+      if (diffMonths < 12) return `${diffMonths}mo ago`;
+      return `${diffYears}y ago`;
+    }
+  } catch {
+    return "--";
+  }
+}
+
 function toContainerRows(stats) {
   return (stats || []).map((item) => ({
     name: item.name,
@@ -13,6 +52,7 @@ function toContainerRows(stats) {
     port: item.port || (Array.isArray(item.ports) && item.ports.length > 0 ? item.ports.join(", ") : "--"),
     cpu: `${Number(item.cpuPercent ?? item.cpu ?? 0).toFixed(1)}%`,
     mem: `${Math.round(Number(item.memMB ?? 0))}MB`,
+    created: formatCreatedTime(item.createdAt),
   }));
 }
 

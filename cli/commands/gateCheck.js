@@ -12,11 +12,13 @@ async function currentBranch(repoPath) {
   }
 }
 
-async function gateCheck() {
+async function gateCheck(options = {}) {
   const repoPath = process.cwd()
   const branch = await currentBranch(repoPath)
   const gate = new GitGate(null, repoPath)
   const bridge = new LiveBridge()
+  const enforceGate = options?.enforceGate === true
+  const warnOnly = options?.warnOnly === true || !enforceGate
 
   await bridge.connect()
   bridge.emit('gitgate:start', {
@@ -42,18 +44,38 @@ async function gateCheck() {
       },
     })
 
-    bridge.emit('gitgate:result', {
+    const normalizedResult = {
       ...result,
       timestamp: result.timestamp || new Date().toISOString(),
       branch,
       allowed: !result.blocked,
-    })
+    }
 
     if (result.blocked) {
+      if (warnOnly) {
+        const warning = `Gate blocked but continuing due to --warn-only: ${result.reason || 'policy violation'}`
+        console.warn(`[DOCKIUM] ${warning}`)
+        bridge.emit('gitgate:log', {
+          timestamp: new Date().toISOString(),
+          level: 'warn',
+          step: 'gate-policy',
+          message: warning,
+        })
+        normalizedResult.blocked = false
+        normalizedResult.allowed = true
+        normalizedResult.reason = `${result.reason || 'policy violation'} (warn-only)`
+        bridge.emit('gitgate:result', normalizedResult)
+        process.exit(0)
+        return
+      }
+
+      bridge.emit('gitgate:result', normalizedResult)
       console.error(`[DOCKIUM] Gate blocked: ${result.reason || 'policy violation'}`)
       process.exit(1)
       return
     }
+
+    bridge.emit('gitgate:result', normalizedResult)
 
     process.exit(0)
   } catch (error) {

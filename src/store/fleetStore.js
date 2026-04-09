@@ -85,7 +85,94 @@ export const useFleetStore = create((set, get) => ({
   sessions: [],
   selectedSessionId: null,
   startError: "",
+  authCheck: {
+    loading: false,
+    status: "UNKNOWN",
+    detail: "Not checked",
+    route: "",
+    checkedAt: "",
+  },
   activityLog: [logLine("SYSTEM", "Fleet idle")],
+
+  checkAuthState: async () => {
+    set((state) => ({
+      authCheck: {
+        ...state.authCheck,
+        loading: true,
+      },
+    }));
+
+    try {
+      const appMap = await window.dockium?.project?.getAppMap?.();
+      const routes = Array.isArray(appMap?.routeTree) ? appMap.routeTree : [];
+
+      const candidate = routes.find((route) => {
+        const method = String(route?.method || "GET").toUpperCase();
+        const pathValue = String(route?.path || route?.fullPath || "").toLowerCase();
+        if (method !== "GET") {
+          return false;
+        }
+        if (route?.authRequired) {
+          return true;
+        }
+        return /\/me|\/whoami|\/profile|\/account/.test(pathValue);
+      }) || null;
+
+      if (!candidate) {
+        set((state) => ({
+          authCheck: {
+            ...state.authCheck,
+            loading: false,
+            status: "UNKNOWN",
+            detail: "No protected route found for auth check",
+            route: "",
+            checkedAt: new Date().toISOString(),
+          },
+          activityLog: [logLine("SYSTEM", "Fleet auth check: no protected route available"), ...state.activityLog].slice(0, 80),
+        }));
+        return;
+      }
+
+      const tested = await window.dockium?.project?.testRoute?.({
+        route: candidate,
+        authToken: "",
+        headers: {},
+        pathParams: [],
+        queryParams: [],
+        body: null,
+        method: candidate.method,
+      });
+
+      const statusCode = Number(tested?.result?.liveResponse?.statusCode || 0);
+      const loginState = (statusCode === 401 || statusCode === 403)
+        ? "NOT_LOGGED_IN"
+        : statusCode > 0 && statusCode < 400
+          ? "LOGGED_IN_OR_PUBLIC"
+          : "UNKNOWN";
+
+      set((state) => ({
+        authCheck: {
+          loading: false,
+          status: loginState,
+          detail: `Auth probe ${String(candidate?.method || "GET").toUpperCase()} ${candidate?.path || candidate?.fullPath || "/"} -> ${statusCode || 0}`,
+          route: String(candidate?.path || candidate?.fullPath || ""),
+          checkedAt: new Date().toISOString(),
+        },
+        activityLog: [logLine("SYSTEM", `Fleet auth check: ${loginState} (${statusCode || 0})`), ...state.activityLog].slice(0, 80),
+      }));
+    } catch (error) {
+      set((state) => ({
+        authCheck: {
+          loading: false,
+          status: "UNKNOWN",
+          detail: `Auth probe failed: ${sanitizeText(error?.message || "unknown")}`,
+          route: "",
+          checkedAt: new Date().toISOString(),
+        },
+        activityLog: [logLine("SYSTEM", `Fleet auth check failed: ${error?.message || "unknown"}`), ...state.activityLog].slice(0, 80),
+      }));
+    }
+  },
 
   applyFleetSnapshot: (statusMap = {}) => {
     const entries = Object.entries(statusMap || {});
@@ -274,6 +361,8 @@ export const useFleetStore = create((set, get) => ({
   selectSession: (id) => set({ selectedSessionId: id }),
 
   startFleet: async () => {
+    await get().checkAuthState();
+
     const selectedRoles = get().roleOptions.filter((role) => role.enabled).map((role) => role.id);
 
     const payload = {

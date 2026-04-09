@@ -68,6 +68,7 @@ textarea {
   width: 24px;
   height: 24px;
   flex: 0 0 24px;
+  color: #1f2937;
 }
 
 .window-menu {
@@ -2079,6 +2080,36 @@ webview {
   justify-items: center;
   background: var(--bg-base);
   padding: 16px;
+}
+
+.onboarding-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 140;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(8, 16, 28, 0.58);
+  backdrop-filter: blur(4px);
+}
+
+.onboarding-page.embedded {
+  width: auto;
+  height: auto;
+  min-height: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.onboarding-page.embedded .onboarding-titlebar,
+.onboarding-page.embedded .onboarding-card {
+  width: min(920px, calc(100vw - 64px));
+  max-width: min(920px, calc(100vw - 64px));
+}
+
+.onboarding-page.embedded .onboarding-card {
+  max-height: calc(100vh - 120px);
+  overflow: hidden;
 }
 
 .onboarding-titlebar {
@@ -4629,6 +4660,143 @@ webview {
   color: #555555;
   font-family: var(--font-mono);
   font-size: 12px;
+}
+
+/* AppMap v2 theme alignment with core dashboard/page styles */
+.appmap-v2-page {
+  background: var(--bg-base);
+}
+
+.appmap-v2-header {
+  background: var(--bg-base);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 16px;
+}
+
+.appmap-v2-title-row h2 {
+  font-size: 20px;
+  font-weight: 600;
+  color: #111111;
+  font-family: "Inter", "IBM Plex Sans", "Segoe UI", Arial, sans-serif;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.appmap-v2-title-row span {
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  font-family: var(--font-mono);
+}
+
+.appmap-v2-search,
+.appmap-v2-token,
+.appmap-v2-select,
+.appmap-test-panel textarea {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+  font-family: var(--font-mono);
+}
+
+.appmap-v2-btn,
+.appmap-inline-btn {
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: transparent;
+  color: #111111;
+  font-size: 11px;
+  text-transform: none;
+}
+
+.appmap-v2-btn:hover,
+.appmap-inline-btn:hover {
+  background: var(--bg-hover);
+}
+
+.appmap-v2-meta-row span,
+.appmap-package-pill,
+.appmap-v2-checks span,
+.appmap-v2-scanline span {
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  border-radius: 999px;
+}
+
+.appmap-v2-authfilters,
+.appmap-v2-tabs,
+.appmap-api-tabs {
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.appmap-v2-tab,
+.appmap-api-tab {
+  background: transparent;
+  color: var(--text-secondary);
+  border-right: 1px solid var(--border);
+  text-transform: none;
+}
+
+.appmap-v2-tab.active,
+.appmap-api-tab.active {
+  background: var(--bg-selected);
+  color: #111111;
+}
+
+.appmap-v2-body {
+  padding: 16px;
+}
+
+.appmap-v2-tabpanel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  padding: 12px;
+}
+
+.appmap-tree-wrap,
+.appmap-pages-graph,
+.appmap-auth-workflow,
+.appmap-auth-test-results,
+.appmap-openapi-debug {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.appmap-route-card,
+.appmap-test-panel,
+.appmap-virtual-sources {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.appmap-route-card.selected {
+  border-color: var(--border-strong);
+  box-shadow: 0 0 0 1px var(--bg-selected) inset;
+}
+
+.appmap-route-main h3,
+.appmap-v2-tabpanel h3 {
+  color: #111111;
+  font-family: "Inter", "IBM Plex Sans", "Segoe UI", Arial, sans-serif;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.appmap-route-main p,
+.appmap-v2-note,
+.appmap-v2-warn,
+.appmap-v2-error,
+.appmap-auth-workflow-row,
+.appmap-auth-workflow-artifacts,
+.appmap-auth-test-row,
+.appmap-openapi-debug-item {
+  color: var(--text-secondary);
 }
 
 @media (max-width: 1180px) {

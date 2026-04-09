@@ -22,6 +22,20 @@ class BrowserFleet {
     }
   }
 
+  isUiRoute(route) {
+    const method = String(route?.method || 'GET').toUpperCase()
+    if (method !== 'GET' && method !== 'HEAD') {
+      return false
+    }
+
+    const pathValue = String(route?.path || route?.fullPath || '/').toLowerCase()
+    if (!pathValue || pathValue === '/api' || pathValue === '/rest' || pathValue.startsWith('/api/') || pathValue.startsWith('/rest/')) {
+      return false
+    }
+
+    return !/\.(json|xml|js|css|png|jpe?g|gif|svg|ico|woff2?|ttf|map)$/i.test(pathValue)
+  }
+
   resolveRoleNames(options = {}) {
     const defaults = ['legitUser', 'admin', 'attacker', 'fieldFuzzer', 'observerOne', 'observerTwo']
     const requested = Array.isArray(options.roles) ? options.roles.filter(Boolean) : []
@@ -146,12 +160,13 @@ class BrowserFleet {
 
   async runObserver(session, startIndex = 0) {
     const target = this.config.project.targetUrl
-    if (!Array.isArray(this.routes) || this.routes.length === 0) {
+    const uiRoutes = Array.isArray(this.routes) ? this.routes.filter((route) => this.isUiRoute(route)) : []
+    if (uiRoutes.length === 0) {
       await session.navigate(target)
       return
     }
 
-    const slice = this.routes.slice(startIndex, startIndex + 20)
+    const slice = uiRoutes.slice(startIndex, startIndex + 20)
     for (const route of slice) {
       const path = String(route.path || '/').replace(/:id/g, '1')
       const url = `${target}${path.startsWith('/') ? path : `/${path}`}`

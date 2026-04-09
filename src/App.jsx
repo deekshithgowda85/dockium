@@ -19,6 +19,7 @@ import { useScanStore } from "./store/scanStore";
 import { useProxyStore } from "./store/proxyStore";
 import { useGitStore } from "./store/gitStore";
 import { useMapStore } from "./store/mapStore";
+import { useUiStore } from "./store/uiStore";
 
 function HomeRedirect() {
   const [targetPath, setTargetPath] = React.useState(null);
@@ -41,7 +42,12 @@ function HomeRedirect() {
           return;
         }
 
-        setTargetPath(state?.projectLoaded ? "/dashboard" : "/onboarding");
+        if (state?.projectLoaded) {
+          setTargetPath("/dashboard");
+        } else {
+          useUiStore.getState().openOnboardingModal?.();
+          setTargetPath("/dashboard");
+        }
 
         if (state?.projectLoaded) {
           void (async () => {
@@ -99,6 +105,7 @@ function NewProjectSetupRedirect() {
             deferProjectOpen: true,
           });
         }
+        useUiStore.getState().openOnboardingModal?.();
       } finally {
         if (active) {
           setReady(true);
@@ -116,7 +123,7 @@ function NewProjectSetupRedirect() {
     return <div className="onboarding-loading-route">Preparing setup...</div>;
   }
 
-  return <Navigate to="/onboarding" replace />;
+  return <Navigate to="/dashboard" replace />;
 }
 
 export default function App() {

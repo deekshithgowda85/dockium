@@ -1,7 +1,7 @@
 import React from "react";
-import { useNavigate } from "react-router-dom";
 import { useDummyPageApi } from "../hooks/useDummyPageApi";
 import { useContainerStore } from "../store/containerStore";
+import { useUiStore } from "../store/uiStore";
 import { useScanStore } from "../store/scanStore";
 
 function statusClass(status) {
@@ -11,7 +11,6 @@ function statusClass(status) {
 }
 
 export default function Dashboard() {
-  const navigate = useNavigate();
   const {
     projectName,
     projectPath,
@@ -36,6 +35,7 @@ export default function Dashboard() {
     viewReport,
   } = useScanStore();
 
+  const { openOnboardingModal } = useUiStore();
   const { isLoading, refresh } = useDummyPageApi("dashboard");
 
   React.useEffect(() => {
@@ -92,6 +92,7 @@ export default function Dashboard() {
                   <tr>
                     <th>NAME</th>
                     <th>STATUS</th>
+                    <th>CREATED</th>
                     <th>PORT</th>
                     <th>CPU</th>
                     <th>MEM</th>
@@ -102,6 +103,7 @@ export default function Dashboard() {
                     <tr key={container.name}>
                       <td>{container.name}</td>
                       <td className={statusClass(container.status)}>{container.status.toLowerCase()}</td>
+                      <td>{container.created}</td>
                       <td>{container.port}</td>
                       <td>{container.cpu}</td>
                       <td>{container.mem}</td>
@@ -145,7 +147,7 @@ export default function Dashboard() {
           <section className="dash-box">
             <header className="dash-head">QUICK ACTIONS</header>
             <div className="dash-content quick-actions-stack">
-              <button className="dash-btn" onClick={() => navigate("/new-project")}>New Project Setup</button>
+              <button className="dash-btn" onClick={openOnboardingModal}>New Project Setup</button>
               <button className="dash-btn dash-btn-primary" onClick={runFullScan}>Run Full Scan</button>
               <button className="dash-btn" onClick={openInProxy}>Open in Proxy</button>
               <button className="dash-btn" onClick={exportReport}>Export Report</button>

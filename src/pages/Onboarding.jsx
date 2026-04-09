@@ -24,10 +24,11 @@ function StepIndicator({ step }) {
   );
 }
 
-export default function Onboarding() {
+export default function Onboarding({ embedded = false }) {
   const navigate = useNavigate();
   const addToast = useUiStore((state) => state.addToast);
   const setInitialization = useUiStore((state) => state.setInitialization);
+  const closeOnboardingModal = useUiStore((state) => state.closeOnboardingModal);
 
   const [step, setStep] = React.useState(1);
   const [projectPath, setProjectPath] = React.useState("");
@@ -398,7 +399,11 @@ export default function Onboarding() {
       }
 
       if (state.projectLoaded) {
-        navigate("/dashboard", { replace: true });
+        if (embedded) {
+          closeOnboardingModal();
+        } else {
+          navigate("/dashboard", { replace: true });
+        }
         return;
       }
 
@@ -442,7 +447,7 @@ export default function Onboarding() {
     return () => {
       mounted = false;
     };
-  }, [loadRecentImports, navigate, setInitialization]);
+  }, [closeOnboardingModal, embedded, loadRecentImports, navigate, setInitialization]);
 
   React.useEffect(() => {
     if (step !== 3 || bootStarted) {
@@ -536,12 +541,18 @@ export default function Onboarding() {
     }
 
     await persistOnboardingState(true);
+    closeOnboardingModal();
     navigate("/dashboard", { replace: true });
   };
 
   const handleBack = () => {
     if (step > 1) {
       setStep((current) => Math.max(1, current - 1));
+      return;
+    }
+
+    if (embedded) {
+      closeOnboardingModal();
       return;
     }
 
@@ -555,31 +566,44 @@ export default function Onboarding() {
     : "";
 
   return (
-    <section className="onboarding-page">
+    <section className={embedded ? "onboarding-page embedded" : "onboarding-page"}>
       <div className="onboarding-titlebar">
         <button className="onboarding-titlebar-back" onClick={handleBack}>Back</button>
         <span className="onboarding-titlebar-title">Dockium Setup</span>
-        <div className="onboarding-window-controls">
-          <button type="button" className="window-control no-drag" onClick={() => window.dockium?.window?.minimize?.()}>
-            -
-          </button>
-          <button
-            type="button"
-            className="window-control no-drag"
-            onClick={() => window.dockium?.window?.toggleMaximize?.()}
-            title={isMaximized ? "Restore" : "Maximize"}
-          >
-            {isMaximized ? "[]" : "[ ]"}
-          </button>
-          <button
-            type="button"
-            className="window-control close no-drag"
-            onClick={() => window.dockium?.window?.close?.()}
-            title="Close"
-          >
-            x
-          </button>
-        </div>
+        {embedded ? (
+          <div className="onboarding-window-controls">
+            <button
+              type="button"
+              className="window-control no-drag"
+              onClick={closeOnboardingModal}
+              title="Close setup"
+            >
+              x
+            </button>
+          </div>
+        ) : (
+          <div className="onboarding-window-controls">
+            <button type="button" className="window-control no-drag" onClick={() => window.dockium?.window?.minimize?.()}>
+              -
+            </button>
+            <button
+              type="button"
+              className="window-control no-drag"
+              onClick={() => window.dockium?.window?.toggleMaximize?.()}
+              title={isMaximized ? "Restore" : "Maximize"}
+            >
+              {isMaximized ? "[]" : "[ ]"}
+            </button>
+            <button
+              type="button"
+              className="window-control close no-drag"
+              onClick={() => window.dockium?.window?.close?.()}
+              title="Close"
+            >
+              x
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="onboarding-card">

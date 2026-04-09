@@ -5,6 +5,8 @@ export const useUiStore = create((set, get) => ({
   settingsTab: "general",
   proxyOn: false,
   scanMode: "Full Scan",
+  newProjectModalOpen: false,
+  onboardingModalOpen: false,
   initialization: {
     active: false,
     message: "",
@@ -28,6 +30,10 @@ export const useUiStore = create((set, get) => ({
     set({ proxyOn: true });
   },
   setScanMode: (mode) => set({ scanMode: mode }),
+  openNewProjectModal: () => set({ newProjectModalOpen: true, onboardingModalOpen: true }),
+  closeNewProjectModal: () => set({ newProjectModalOpen: false, onboardingModalOpen: false }),
+  openOnboardingModal: () => set({ onboardingModalOpen: true, newProjectModalOpen: true }),
+  closeOnboardingModal: () => set({ onboardingModalOpen: false, newProjectModalOpen: false }),
   setInitialization: (patch) => {
     set((state) => ({
       initialization: {

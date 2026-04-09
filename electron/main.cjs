@@ -116,6 +116,7 @@ async function initPersistentStore() {
       onboarding: defaultOnboardingState,
       pushHistory: [],
       gateRules: runtime.gateRules,
+      snapshots: [],
       recentDockerImports: defaultRecentDockerImports,
     },
   });
@@ -1582,6 +1583,180 @@ function buildSummaryPrompt(context, extraPrompt = "") {
     .join("\n");
 }
 
+function toErrorResponse(error, code = 500, detail = "") {
+  return {
+    ok: false,
+    error: String(error || "Request failed"),
+    code: Number(code || 500),
+    detail: String(detail || ""),
+  };
+}
+
+function hasSecretSignal(finding = {}) {
+  const haystack = [
+    finding?.title,
+    finding?.name,
+    finding?.description,
+    finding?.what,
+    finding?.type,
+    finding?.category,
+    finding?.module,
+    finding?.scanner,
+    finding?.source,
+    finding?.value,
+    finding?.secret,
+  ]
+    .map((part) => String(part || "").toLowerCase())
+    .join(" ");
+
+  if (!haystack.trim()) {
+    return false;
+  }
+
+  return /secret|token|apikey|api[-_\s]?key|password|passwd|private[-_\s]?key|aws|stripe|jwt|bearer/.test(haystack);
+}
+
+function inferSecretType(finding = {}) {
+  const text = [finding?.title, finding?.name, finding?.type, finding?.category, finding?.description]
+    .map((part) => String(part || "").toLowerCase())
+    .join(" ");
+
+  if (/aws/.test(text)) return "AWS key";
+  if (/stripe/.test(text)) return "Stripe key";
+  if (/jwt/.test(text)) return "JWT secret";
+  if (/private key|ssh|pem/.test(text)) return "Private key";
+  if (/password|passwd/.test(text)) return "Password";
+  if (/token|bearer/.test(text)) return "Access token";
+  if (/api[-_\s]?key/.test(text)) return "API key";
+  return "Potential secret";
+}
+
+function maskSecretPreview(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "masked";
+  }
+  if (text.length <= 6) {
+    return `${text.slice(0, 1)}***`;
+  }
+  return `${text.slice(0, 4)}...${text.slice(-2)}`;
+}
+
+function toSecretLocation(finding = {}) {
+  const sourceFile = String(finding?.sourceFile || finding?.file || finding?.path || "").trim();
+  const line = Number(finding?.line || finding?.lineNumber || 0);
+  if (sourceFile && line > 0) {
+    return `${sourceFile}:${line}`;
+  }
+  if (sourceFile) {
+    return sourceFile;
+  }
+  const endpoint = String(finding?.endpoint || finding?.url || "").trim();
+  return endpoint || "unknown";
+}
+
+function collectSecretFindings() {
+  const scanFindings = Array.isArray(runtime?.lastScan?.findings) ? runtime.lastScan.findings : [];
+  const artemisFindings = Array.isArray(runtime?.nucleiState?.findings) ? runtime.nucleiState.findings : [];
+  const reportFindings = Array.isArray(runtime?.latestReport?.findings) ? runtime.latestReport.findings : [];
+
+  const merged = [
+    ...scanFindings.map((finding) => ({ finding, source: "scan" })),
+    ...artemisFindings.map((finding) => ({ finding, source: "artemis" })),
+    ...reportFindings.map((finding) => ({ finding, source: "report" })),
+  ];
+
+  const out = [];
+  const seen = new Set();
+
+  for (const entry of merged) {
+    const finding = entry.finding || {};
+    const source = entry.source || "scan";
+
+    if (!hasSecretSignal(finding)) {
+      continue;
+    }
+
+    const type = inferSecretType(finding);
+    const location = toSecretLocation(finding);
+    const state = String(finding?.state || (source === "report" ? "In report history" : "Current scan"));
+    const severity = String(finding?.severity || "info").toLowerCase();
+    const rawValue = String(finding?.value || finding?.secret || finding?.evidence || finding?.payload || finding?.title || "");
+    const valuePreview = maskSecretPreview(rawValue);
+    const key = `${type}|${location}|${valuePreview}|${severity}`;
+
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+
+    out.push({
+      id: String(finding?.id || `secret-${out.length + 1}`),
+      type,
+      valuePreview,
+      location,
+      state,
+      severity,
+      source,
+      detectedAt: String(finding?.timestamp || finding?.createdAt || new Date().toISOString()),
+      detail: String(finding?.description || finding?.what || finding?.title || "Potential secret exposed"),
+    });
+  }
+
+  out.sort((a, b) => {
+    const order = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+    const aRank = order[a.severity] ?? 99;
+    const bRank = order[b.severity] ?? 99;
+    if (aRank !== bRank) {
+      return aRank - bRank;
+    }
+    return new Date(b.detectedAt).getTime() - new Date(a.detectedAt).getTime();
+  });
+
+  return out;
+}
+
+function estimateSnapshotSize(snapshot) {
+  try {
+    return Buffer.byteLength(JSON.stringify(snapshot), "utf8");
+  } catch {
+    return 0;
+  }
+}
+
+function humanSize(bytes) {
+  const size = Number(bytes || 0);
+  if (size <= 0) {
+    return "0 B";
+  }
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function normalizeSnapshots(raw = []) {
+  const snapshots = Array.isArray(raw) ? raw : [];
+  return snapshots
+    .map((snapshot) => ({
+      id: String(snapshot?.id || `snapshot-${Date.now()}`),
+      name: String(snapshot?.name || "snapshot"),
+      context: String(snapshot?.context || ""),
+      createdAt: String(snapshot?.createdAt || new Date().toISOString()),
+      projectName: String(snapshot?.projectName || runtime?.projectInfo?.name || ""),
+      projectPath: String(snapshot?.projectPath || runtime?.projectPath || ""),
+      summary: snapshot?.summary || {},
+      gateRules: snapshot?.gateRules || {},
+      sizeBytes: Number(snapshot?.sizeBytes || 0),
+      sizeLabel: String(snapshot?.sizeLabel || humanSize(snapshot?.sizeBytes || 0)),
+      restoredAt: String(snapshot?.restoredAt || ""),
+    }))
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
 async function buildReportContext() {
   const project = runtime.projectInfo || {};
   const appMap = runtime.appMap || {};
@@ -2205,6 +2380,120 @@ function registerCoreIpcHandlers() {
       projectPath: detection.projectPath,
       detection,
     };
+  });
+
+  ipcMain.handle("secrets:getFindings", async () => {
+    try {
+      const findings = collectSecretFindings();
+      const summary = summarizeBySeverity(findings);
+      return {
+        ok: true,
+        findings,
+        summary,
+        generatedAt: new Date().toISOString(),
+      };
+    } catch (error) {
+      return toErrorResponse("Failed to load secrets", 500, String(error?.message || "collectSecretFindings"));
+    }
+  });
+
+  ipcMain.handle("snapshots:list", async () => {
+    try {
+      const snapshots = normalizeSnapshots(getStore().get("snapshots") || []);
+      return { ok: true, snapshots };
+    } catch (error) {
+      return toErrorResponse("Failed to load snapshots", 500, String(error?.message || "snapshots:list"));
+    }
+  });
+
+  ipcMain.handle("snapshots:create", async (_event, payload = {}) => {
+    try {
+      const existing = normalizeSnapshots(getStore().get("snapshots") || []);
+      const now = new Date();
+      const findingsSummary = summarizeBySeverity(Array.isArray(runtime?.lastScan?.findings) ? runtime.lastScan.findings : []);
+      const proxyCount = runtime.proxyEngine ? Number(runtime.proxyEngine.getRequests()?.length || 0) : 0;
+
+      const snapshot = {
+        id: `snap-${now.getTime()}`,
+        name: String(payload?.name || `snapshot-${now.toISOString().replace(/[:.]/g, "-")}`),
+        context: String(payload?.context || "Manual snapshot"),
+        createdAt: now.toISOString(),
+        projectName: String(runtime?.projectInfo?.name || ""),
+        projectPath: String(runtime?.projectPath || ""),
+        summary: {
+          findings: findingsSummary,
+          proxyRequests: proxyCount,
+          routeCount: Number(runtime?.appMap?.routeTree?.length || 0),
+        },
+        gateRules: { ...(runtime?.gateRules || {}) },
+      };
+
+      snapshot.sizeBytes = estimateSnapshotSize(snapshot);
+      snapshot.sizeLabel = humanSize(snapshot.sizeBytes);
+
+      const next = [snapshot, ...existing].slice(0, 200);
+      getStore().set("snapshots", next);
+
+      return { ok: true, snapshot };
+    } catch (error) {
+      return toErrorResponse("Failed to create snapshot", 500, String(error?.message || "snapshots:create"));
+    }
+  });
+
+  ipcMain.handle("snapshots:restore", async (_event, payload = {}) => {
+    try {
+      const targetId = String(payload?.id || "");
+      if (!targetId) {
+        return toErrorResponse("Missing snapshot id", 400, "snapshots:restore requires id");
+      }
+
+      const snapshots = normalizeSnapshots(getStore().get("snapshots") || []);
+      const index = snapshots.findIndex((snapshot) => snapshot.id === targetId);
+      if (index < 0) {
+        return toErrorResponse("Snapshot not found", 404, `id=${targetId}`);
+      }
+
+      const snapshot = snapshots[index];
+      const restoredAt = new Date().toISOString();
+      const restored = {
+        ...snapshot,
+        restoredAt,
+      };
+
+      snapshots[index] = restored;
+      getStore().set("snapshots", snapshots);
+
+      if (snapshot?.gateRules && typeof snapshot.gateRules === "object") {
+        runtime.gateRules = { ...runtime.gateRules, ...snapshot.gateRules };
+        getStore().set("gateRules", runtime.gateRules);
+      }
+
+      return {
+        ok: true,
+        snapshot: restored,
+        applied: {
+          gateRules: snapshot?.gateRules || {},
+        },
+      };
+    } catch (error) {
+      return toErrorResponse("Failed to restore snapshot", 500, String(error?.message || "snapshots:restore"));
+    }
+  });
+
+  ipcMain.handle("snapshots:delete", async (_event, payload = {}) => {
+    try {
+      const targetId = String(payload?.id || "");
+      if (!targetId) {
+        return toErrorResponse("Missing snapshot id", 400, "snapshots:delete requires id");
+      }
+
+      const snapshots = normalizeSnapshots(getStore().get("snapshots") || []);
+      const next = snapshots.filter((snapshot) => snapshot.id !== targetId);
+      getStore().set("snapshots", next);
+      return { ok: true, snapshots: next };
+    } catch (error) {
+      return toErrorResponse("Failed to delete snapshot", 500, String(error?.message || "snapshots:delete"));
+    }
   });
 
   ipcMain.handle("window:minimize", (event) => {

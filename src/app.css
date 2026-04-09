@@ -4069,16 +4069,27 @@ webview {
   background: #ffffff;
 }
 
+.appmap-api-panel .appmap-api-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
 .appmap-api-tab {
   min-height: 34px;
+  min-width: 140px;
   border: none;
   border-right: 1px solid #bdbdbd;
   background: #ffffff;
-  color: #303030;
+  color: #111111;
   padding: 0 14px;
   font-size: 12px;
+  font-weight: 600;
   font-family: var(--font-mono);
-  text-transform: uppercase;
+  text-transform: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
 }
 
@@ -4735,7 +4746,7 @@ webview {
 .appmap-v2-tab,
 .appmap-api-tab {
   background: transparent;
-  color: var(--text-secondary);
+  color: #111111;
   border-right: 1px solid var(--border);
   text-transform: none;
 }

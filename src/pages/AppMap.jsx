@@ -8,8 +8,8 @@ const viewTabs = [
 ];
 
 const apiSubTabs = [
-  { id: "auth", label: "Auth Login" },
   { id: "routes", label: "API Endpoints" },
+  { id: "auth", label: "Auth Flow" },
 ];
 
 function prettyJson(value) {
@@ -349,7 +349,7 @@ function RouteCard({ route, selected, expanded, testDraft, onSelect, onToggleExp
 
 export default function AppMap() {
   const [activeTab, setActiveTab] = React.useState("files");
-  const [apiSubTab, setApiSubTab] = React.useState("auth");
+  const [apiSubTab, setApiSubTab] = React.useState("routes");
   const [showOpenApiDebug, setShowOpenApiDebug] = React.useState(false);
   const authAutoRefreshRunRef = React.useRef("");
   const bootScanTriggered = React.useRef(false);

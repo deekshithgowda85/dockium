@@ -337,16 +337,6 @@ export default function Report() {
     refreshContext();
   }, [refreshContext]);
 
-  React.useEffect(() => {
-    const timer = window.setInterval(() => {
-      refreshContext();
-    }, 3000);
-
-    return () => {
-      window.clearInterval(timer);
-    };
-  }, [refreshContext]);
-
   const projectName = String(context?.project?.name || "-");
   const scanStarted = String(context?.scan?.completedAt || "-");
   const duration = Number(context?.scan?.durationMs || 0);

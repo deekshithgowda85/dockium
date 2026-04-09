@@ -227,6 +227,17 @@ const api = {
     exportJson: (payload) => invoke("report:exportJson", payload),
   },
 
+  secrets: {
+    getFindings: () => invoke("secrets:getFindings"),
+  },
+
+  snapshots: {
+    list: () => invoke("snapshots:list"),
+    create: (payload) => invoke("snapshots:create", payload),
+    restore: (payload) => invoke("snapshots:restore", payload),
+    delete: (payload) => invoke("snapshots:delete", payload),
+  },
+
   settings: {
     getAll: () => invoke("settings:get-all"),
     set: (payload) => invoke("settings:update", payload),

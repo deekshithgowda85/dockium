@@ -217,28 +217,11 @@ export const useGitStore = create((set, get) => ({
     const check = await window.dockium?.git?.gateCheck?.({ repoPath, branch: "manual-test" });
     const allowed = Boolean(check?.result?.allowed);
 
-    set((state) => {
-      if (!check?.ok) {
-        return { lastTestResult: allowed ? "PASS" : "FAIL" };
-      }
+    set({ lastTestResult: allowed ? "PASS" : "FAIL" });
 
-      const entry = formatHistoryItem(
-        {
-          ...check.result,
-          timestamp: new Date().toISOString(),
-          branch: "manual-test",
-          commitSha: "manual",
-          result: allowed ? "FORWARDED" : "BLOCKED",
-        },
-        Date.now(),
-      );
-
-      return {
-        lastTestResult: allowed ? "PASS" : "FAIL",
-        pushHistory: [entry, ...state.pushHistory],
-        expandedPushId: entry.id,
-      };
-    });
+    if (check?.ok) {
+      await get().hydrate();
+    }
   },
 
   toggleRule: (ruleKey) => {

@@ -924,6 +924,7 @@ class RouteExtractor {
     const querySuffix = buildQueryString(queryParams)
     const url = `${targetUrl.replace(/\/$/, '')}${testPath}${querySuffix}`
     const method = String(requestOverrides?.method || route.method || 'GET').toUpperCase()
+    const bodyEncoding = String(requestOverrides?.bodyEncoding || 'json').toLowerCase()
     const customBody = requestOverrides?.body
     const requestBody = ['POST', 'PUT', 'PATCH'].includes(method)
       ? (customBody !== undefined
@@ -945,8 +946,25 @@ class RouteExtractor {
     }
 
     if (requestBody && method !== 'GET' && method !== 'HEAD') {
-      requestInit.headers['Content-Type'] = 'application/json'
-      requestInit.body = JSON.stringify(requestBody)
+      if (bodyEncoding === 'form') {
+        const params = new URLSearchParams()
+        const source = requestBody && typeof requestBody === 'object' ? requestBody : {}
+        for (const [key, value] of Object.entries(source)) {
+          if (value === undefined || value === null) {
+            continue
+          }
+          if (typeof value === 'object') {
+            params.append(key, JSON.stringify(value))
+          } else {
+            params.append(key, String(value))
+          }
+        }
+        requestInit.headers['Content-Type'] = 'application/x-www-form-urlencoded;charset=UTF-8'
+        requestInit.body = params.toString()
+      } else {
+        requestInit.headers['Content-Type'] = 'application/json'
+        requestInit.body = JSON.stringify(requestBody)
+      }
     }
 
     try {
@@ -974,6 +992,7 @@ class RouteExtractor {
           queryParams,
           headers: requestInit.headers,
           body: requestBody,
+          bodyEncoding,
         },
         liveResponse: {
           statusCode: response.status,
@@ -1001,6 +1020,7 @@ class RouteExtractor {
           queryParams,
           headers: requestInit.headers,
           body: requestBody,
+          bodyEncoding,
         },
         liveResponse: {
           statusCode: 0,

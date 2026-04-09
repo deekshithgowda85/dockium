@@ -117,6 +117,7 @@ class DiscoveryEngine {
       {
         headers: options.headers || {},
         body: options.body,
+        bodyEncoding: options.bodyEncoding || 'json',
         pathParams: options.pathParams || options.params || [],
         queryParams: options.queryParams || [],
         method: options.method || route?.method,

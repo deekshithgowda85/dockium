@@ -27,10 +27,12 @@ export default function GitGate() {
     pushHistory,
     expandedPushId,
     lastTestResult,
+    liveLogs,
     hydrate,
     installGate,
     removeGate,
     testGate,
+    clearLiveLogs,
     toggleRule,
     setThreshold,
     toggleExpandedPush,
@@ -123,6 +125,8 @@ export default function GitGate() {
                 <th>COMMIT</th>
                 <th>RESULT</th>
                 <th>FINDINGS</th>
+                <th>TESTS</th>
+                <th>SUMMARY</th>
                 <th>DURATION</th>
               </tr>
             </thead>
@@ -138,12 +142,16 @@ export default function GitGate() {
                       <td>{push.commit}</td>
                       <td className={resultClass(push.result)}>{push.result}</td>
                       <td>{push.findings}</td>
+                      <td>{push.testsPassed ? "PASS" : "FAIL"}</td>
+                      <td>
+                        {push.severityCounts.critical} critical, {push.severityCounts.high} high, {push.severityCounts.medium} medium
+                      </td>
                       <td>{push.duration}</td>
                     </tr>
 
                     {expanded ? (
                       <tr className="gitgate-detail-row">
-                        <td colSpan={7}>
+                        <td colSpan={9}>
                           <section className="gitgate-detail-box">
                             <header className="gitgate-detail-head">
                               PUSH #{push.id} - {push.result}
@@ -170,11 +178,13 @@ export default function GitGate() {
                               <div>
                                 <strong>Findings:</strong>
                                 <ul>
-                                  {push.findingsTriggered.length === 0 ? (
+                                  {push.findingsList.length === 0 ? (
                                     <li>No blocking findings</li>
                                   ) : (
-                                    push.findingsTriggered.map((finding) => (
-                                      <li key={`${push.id}-${finding}`}>{finding}</li>
+                                    push.findingsList.map((finding, idx) => (
+                                      <li key={`${push.id}-finding-${idx}`}>
+                                        [{String(finding?.severity || "info").toUpperCase()}] {finding?.type || finding?.title || "Finding"} - {finding?.endpoint || finding?.route || "-"}
+                                      </li>
                                     ))
                                   )}
                                 </ul>
@@ -197,6 +207,29 @@ export default function GitGate() {
               })}
             </tbody>
           </table>
+        </div>
+      </section>
+
+      <section className="gitgate-panel">
+        <header className="gitgate-head">LIVE GATE LOG</header>
+        <div className="gitgate-body">
+          <div className="gitgate-actions">
+            <button className="gitgate-btn" onClick={clearLiveLogs}>Clear Logs</button>
+          </div>
+          <div className="gitgate-live-log-box">
+            {liveLogs.length === 0 ? (
+              <div className="gitgate-log-empty">No live gate logs yet.</div>
+            ) : (
+              liveLogs.map((entry) => (
+                <div key={entry.id} className="gitgate-log-line">
+                  <span>{new Date(entry.timestamp).toLocaleTimeString()}</span>
+                  <span>{entry.level.toUpperCase()}</span>
+                  <span>{entry.step || "-"}</span>
+                  <span>{entry.message}</span>
+                </div>
+              ))
+            )}
+          </div>
         </div>
       </section>
     </section>

@@ -117,7 +117,28 @@ class WebSocketServer {
 
   handleMessage(ws, message) {
     console.log('[WebSocketServer] Message received:', message.type)
-    // Handle incoming messages from client
+    const type = String(message?.type || '').trim()
+    if (!type) {
+      return
+    }
+
+    const relayTypes = new Set(['gitgate:start', 'gitgate:log', 'gitgate:result'])
+    if (!relayTypes.has(type)) {
+      return
+    }
+
+    const payload = message?.data && typeof message.data === 'object'
+      ? message.data
+      : {}
+
+    this.broadcast({
+      type,
+      timestamp: Number(message?.timestamp || Date.now()),
+      data: {
+        ...payload,
+        source: String(message?.source || payload?.source || 'ws-client'),
+      }
+    })
   }
 }
 

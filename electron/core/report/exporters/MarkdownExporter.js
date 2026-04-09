@@ -28,6 +28,17 @@ class MarkdownExporter {
     lines.push('```json')
     lines.push(JSON.stringify(reportObject?.operations?.browserUse || {}, null, 2))
     lines.push('```')
+
+    const authWorkflow = (Array.isArray(reportObject?.operations?.browserUse?.documentation?.instances)
+      ? reportObject.operations.browserUse.documentation.instances
+      : [])
+      .find((entry) => String(entry?.kind || '') === 'auth-route')?.workflow || null
+
+    lines.push('')
+    lines.push('### Browser Auth Workflow')
+    lines.push('```json')
+    lines.push(JSON.stringify(authWorkflow || {}, null, 2))
+    lines.push('```')
     lines.push('')
     lines.push('### Proxy')
     lines.push('```json')

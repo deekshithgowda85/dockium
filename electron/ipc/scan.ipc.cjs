@@ -92,6 +92,8 @@ function registerScanIpc(ipcMain, deps) {
     setLatestReport,
     getWss,
     ensureScanRuntime,
+    ensureProxyEngine,
+    getProxyEngine,
   } = deps;
 
   ipcMain.handle("scan:start", async (_event, payload = {}) => {
@@ -126,6 +128,18 @@ function registerScanIpc(ipcMain, deps) {
     }
 
     const mode = payload.mode === "quick" ? "quick" : "full";
+
+    try {
+      const proxyEngine = typeof ensureProxyEngine === "function"
+        ? ensureProxyEngine(config)
+        : (typeof getProxyEngine === "function" ? getProxyEngine() : null);
+      if (proxyEngine && typeof proxyEngine.start === "function") {
+        await proxyEngine.start();
+      }
+    } catch (error) {
+      getWss()?.emitLog(`Proxy startup warning before scan: ${String(error?.message || error)}`, "warn");
+    }
+
     const aiProbeResult = await probeAiEndpoint(settings || {});
     getWss()?.emitLog(
       aiProbeResult.ok

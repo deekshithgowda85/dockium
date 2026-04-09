@@ -1601,7 +1601,7 @@ webview {
   min-height: 0;
   padding: 12px;
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: auto auto minmax(0, 1fr) minmax(160px, 0.8fr);
   gap: 10px;
   overflow: hidden;
   font-family: var(--font-mono);
@@ -1854,6 +1854,54 @@ webview {
   padding: 8px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.gitgate-live-log-box {
+  border: 1px solid var(--border);
+  background: #f7f9fc;
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+}
+
+.gitgate-log-empty {
+  min-height: 60px;
+  display: grid;
+  place-items: center;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.gitgate-log-line {
+  min-height: 24px;
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: 88px 58px 92px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 5px 8px;
+  color: #111111;
+  font-size: 11px;
+}
+
+.gitgate-log-line span:last-child {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 1200px) {
+  .gitgate-table {
+    font-size: 11px;
+  }
+
+  .gitgate-table th,
+  .gitgate-table td {
+    padding: 6px;
+  }
+
+  .gitgate-log-line {
+    grid-template-columns: 74px 52px 78px minmax(0, 1fr);
+  }
 }
 
 .settings-v2-page {
@@ -3983,6 +4031,49 @@ webview {
   padding-right: 2px;
 }
 
+.appmap-api-tabs {
+  display: inline-flex;
+  width: fit-content;
+  border: 1px solid #bdbdbd;
+  background: #ffffff;
+}
+
+.appmap-api-tab {
+  min-height: 34px;
+  border: none;
+  border-right: 1px solid #bdbdbd;
+  background: #ffffff;
+  color: #303030;
+  padding: 0 14px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.appmap-api-tab:last-child {
+  border-right: none;
+}
+
+.appmap-api-tab.active {
+  background: #111111;
+  color: #ffffff;
+}
+
+.appmap-api-panel .appmap-v2-note {
+  font-size: 12px;
+}
+
+.appmap-api-panel .appmap-auth-workflow-row,
+.appmap-api-panel .appmap-auth-workflow-artifacts,
+.appmap-api-panel .appmap-auth-test-row {
+  font-size: 12px;
+}
+
+.appmap-api-panel .appmap-route-group h4 {
+  font-size: 12px;
+}
+
 .appmap-v2-tabpanel h3 {
   margin: 0;
   font-size: 12px;
@@ -3997,15 +4088,16 @@ webview {
   border: 1px solid #d6d6d6;
   background: #fafafa;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
   flex-wrap: wrap;
-  padding: 0 8px;
+  padding: 6px 8px;
   color: #555555;
   font-size: 11px;
   font-family: var(--font-mono);
   line-height: 1.35;
+  min-width: 0;
   overflow-wrap: anywhere;
 }
 
@@ -4253,8 +4345,9 @@ webview {
 }
 
 .appmap-route-head {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   gap: 8px;
   padding: 7px 8px;
   border-bottom: 1px solid #e1e1e1;
@@ -4272,9 +4365,9 @@ webview {
   margin: 0;
   color: #111111;
   font-size: 13px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   font-family: var(--font-mono);
 }
 
@@ -4324,6 +4417,8 @@ webview {
   flex-direction: column;
   align-items: flex-end;
   gap: 4px;
+  min-width: 108px;
+  flex-shrink: 0;
 }
 
 .appmap-auth-badge {
@@ -4413,6 +4508,9 @@ webview {
 
 .appmap-auth-test-actions {
   display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
@@ -4433,6 +4531,7 @@ webview {
   font-family: var(--font-mono);
   font-size: 10px;
   color: #222222;
+  overflow-wrap: anywhere;
 }
 
 .appmap-auth-workflow-artifacts {
@@ -4456,14 +4555,30 @@ webview {
 .appmap-auth-test-row {
   min-height: 24px;
   border-bottom: 1px solid #ececec;
-  padding: 0 8px;
+  padding: 6px 8px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
   font-family: var(--font-mono);
   font-size: 10px;
   color: #222222;
+}
+
+.appmap-auth-test-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+.appmap-auth-test-row-status {
+  flex: 0 0 auto;
+  border: 1px solid #c8c8c8;
+  background: #f7f7f7;
+  padding: 2px 6px;
+  white-space: nowrap;
 }
 
 .appmap-test-grid {
@@ -4524,6 +4639,19 @@ webview {
   .appmap-auth-workflow-row {
     grid-template-columns: 76px 52px minmax(0, 1fr) 56px;
   }
+
+  .appmap-route-head {
+    grid-template-columns: 1fr;
+  }
+
+  .appmap-route-actions {
+    width: 100%;
+    min-width: 0;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    align-items: center;
+  }
 }
 
 @media (max-width: 1100px) {
@@ -4541,6 +4669,16 @@ webview {
   }
 
   .appmap-v2-tab {
+    border-right: 1px solid #bdbdbd;
+  }
+
+  .appmap-api-tabs {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .appmap-api-tab {
     border-right: 1px solid #bdbdbd;
   }
 

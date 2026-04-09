@@ -5,6 +5,7 @@ import HealthMonitor from './HealthMonitor.js'
 
 const docker = new Docker()
 const DEFAULT_CONTAINER_NAMES = ['dockium-proxy', 'dockium-app']
+const PROXY_UPSTREAM_URL = 'http://dockium-proxy:8080'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -203,7 +204,15 @@ class ContainerManager {
       const envContent = `
 NODE_ENV=development
 DOCKIUM_TARGET=http://localhost:${config.project.appPort}
-DOCKIUM_PROXY=http://localhost:8080
+    DOCKIUM_PROXY=${PROXY_UPSTREAM_URL}
+    HTTP_PROXY=${PROXY_UPSTREAM_URL}
+    HTTPS_PROXY=${PROXY_UPSTREAM_URL}
+    ALL_PROXY=${PROXY_UPSTREAM_URL}
+    http_proxy=${PROXY_UPSTREAM_URL}
+    https_proxy=${PROXY_UPSTREAM_URL}
+    all_proxy=${PROXY_UPSTREAM_URL}
+    NODE_USE_ENV_PROXY=1
+    NODE_TLS_REJECT_UNAUTHORIZED=0
 `.split('\n').filter(Boolean)
 
       if (this.shouldUseDbContainer(config)) {
@@ -255,6 +264,17 @@ DOCKIUM_PROXY=http://localhost:8080
       const c = await docker.createContainer({
         Image: imageRef,
         name: 'dockium-app',
+        Env: [
+          `DOCKIUM_PROXY=${PROXY_UPSTREAM_URL}`,
+          `HTTP_PROXY=${PROXY_UPSTREAM_URL}`,
+          `HTTPS_PROXY=${PROXY_UPSTREAM_URL}`,
+          `ALL_PROXY=${PROXY_UPSTREAM_URL}`,
+          `http_proxy=${PROXY_UPSTREAM_URL}`,
+          `https_proxy=${PROXY_UPSTREAM_URL}`,
+          `all_proxy=${PROXY_UPSTREAM_URL}`,
+          'NODE_USE_ENV_PROXY=1',
+          'NODE_TLS_REJECT_UNAUTHORIZED=0'
+        ],
         HostConfig: {
           NetworkMode: this.networkName,
           PortBindings: {
@@ -272,6 +292,7 @@ DOCKIUM_PROXY=http://localhost:8080
   async ensureAppRunning(config) {
     this.healthMonitor.wss = config?.wss || this.healthMonitor.wss
     await this.ensureNetwork()
+    await this.startProxy(config)
 
     if (!this.shouldStartAppContainer(config)) {
       return
@@ -297,18 +318,27 @@ DOCKIUM_PROXY=http://localhost:8080
 
   async startProxy(config) {
     return this.withOperationLock('container:dockium-proxy', async () => {
-      await this.ensureImage('node:18-alpine', { wss: config?.wss, label: 'proxy' })
-      try {
-        await docker.getImage('node:18-alpine').tag({ repo: 'dockium/proxy', tag: 'latest' })
-      } catch {}
+      await this.ensureImage('alpine/socat', { wss: config?.wss, label: 'proxy' })
       await this.removeIfExists('dockium-proxy')
 
       const c = await docker.createContainer({
-        Image: 'dockium/proxy:latest',
+        Image: 'alpine/socat',
         name: 'dockium-proxy',
-        Cmd: ['node', '-e', 'setInterval(()=>{},1000)'],
+        Cmd: [
+          '-d',
+          '-d',
+          'TCP-LISTEN:8080,fork,reuseaddr',
+          'TCP:host.docker.internal:8080'
+        ],
+        ExposedPorts: {
+          '8080/tcp': {}
+        },
         HostConfig: {
+          ExtraHosts: ['host.docker.internal:host-gateway'],
           NetworkMode: this.networkName,
+          PortBindings: {
+            '8080/tcp': [{ HostPort: '8081' }]
+          }
         }
       })
 

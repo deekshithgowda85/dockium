@@ -19,7 +19,16 @@ class GitHookInstaller {
 # This hook intercepts git push and runs Dockium gate check
 
 echo "[DOCKIUM] Running gate check before push..."
-dockium gate-check "\$@"
+
+if command -v dockium >/dev/null 2>&1; then
+  dockium gate-check
+elif [ -f "./bin/dockium.js" ]; then
+  node ./bin/dockium.js gate-check
+else
+  echo "[DOCKIUM] gate-check command not found (expected: dockium or ./bin/dockium.js)"
+  exit 1
+fi
+
 RESULT=$?
 
 if [ $RESULT -ne 0 ]; then

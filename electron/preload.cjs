@@ -18,6 +18,9 @@ const listeners = {
   nuclei_progress: new Set(),
   fleet: new Set(),
   gate_result: new Set(),
+  "gitgate:start": new Set(),
+  "gitgate:log": new Set(),
+  "gitgate:result": new Set(),
 };
 
 function dispatchEvent(type, payload) {
@@ -181,6 +184,7 @@ const api = {
     installHook: (payload) => invoke("git:installHook", payload),
     removeHook: (payload) => invoke("git:removeHook", payload),
     getPushHistory: () => invoke("git:getPushHistory"),
+    loadHistory: (payload) => invoke("gitgate:loadHistory", payload),
     getGateStatus: () => invoke("git:getGateStatus"),
     setGateRules: (payload) => invoke("git:setGateRules", payload),
     gateCheck: (payload) => invoke("git:gateCheck", payload),
@@ -238,6 +242,9 @@ const api = {
     onScanComplete: (callback) => subscribe("scan_complete", callback),
     onNucleiProgress: (callback) => subscribe("nuclei_progress", callback),
     onFleet: (callback) => subscribe("fleet", callback),
+    onGitGateStart: (callback) => subscribe("gitgate:start", callback),
+    onGitGateLog: (callback) => subscribe("gitgate:log", callback),
+    onGitGateResult: (callback) => subscribe("gitgate:result", callback),
   },
 
   // Backward-compatible aliases used by existing renderer.

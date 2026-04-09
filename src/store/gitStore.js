@@ -10,22 +10,82 @@ const defaultRules = {
   threshold: 1,
 };
 
+function severityCounts(findings = []) {
+  const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+  for (const finding of Array.isArray(findings) ? findings : []) {
+    const key = String(finding?.severity || "info").toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(counts, key)) {
+      counts[key] += 1;
+    } else {
+      counts.info += 1;
+    }
+  }
+  return counts;
+}
+
+function normalizeDuration(item = {}) {
+  if (item.duration) {
+    return String(item.duration);
+  }
+  const durationMs = Number(item.durationMs || 0);
+  if (!durationMs) {
+    return "-";
+  }
+  return `${(durationMs / 1000).toFixed(1)}s`;
+}
+
+function toResultStatus(item = {}) {
+  if (item.result) {
+    return String(item.result).toUpperCase();
+  }
+  if (item.blocked === true || item.allowed === false) {
+    return "BLOCKED";
+  }
+  return "FORWARDED";
+}
+
+function mergeHistoryRecords(primary = [], secondary = []) {
+  const out = [];
+  const seen = new Set();
+  for (const entry of [...primary, ...secondary]) {
+    const key = `${entry?.timestamp || ""}|${entry?.commitSha || entry?.commit || ""}|${entry?.result || ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push(entry);
+  }
+  return out.sort((a, b) => {
+    const aTs = new Date(a?.timestamp || 0).getTime();
+    const bTs = new Date(b?.timestamp || 0).getTime();
+    return bTs - aTs;
+  });
+}
+
 function formatHistoryItem(item, index) {
-  const id = item.id || index + 1;
-  const result = String(item.result || "FORWARDED").toUpperCase();
+  const id = item.id || `${item.timestamp || Date.now()}-${index + 1}`;
+  const result = toResultStatus(item);
   const findings = Array.isArray(item.findings) ? item.findings : [];
+  const counts = severityCounts(findings);
 
   return {
     id,
+    timestampRaw: item.timestamp || "",
     timestamp: item.timestamp ? new Date(item.timestamp).toLocaleString() : "-",
     branch: item.branch || "unknown",
     commit: item.commitSha || item.commit || "unknown",
     result,
     findings: `${findings.length} findings`,
-    duration: item.duration || "-",
+    findingsCount: findings.length,
+    duration: normalizeDuration(item),
+    testsPassed: item.testsPassed !== false,
     reason: item.reason || "-",
     diff: item.diffString || item.diff || "No diff data",
     newRoutes: item.newRoutes || [],
+    changedFiles: Array.isArray(item.changedFiles) ? item.changedFiles : [],
+    severityCounts: counts,
+    findingsList: findings,
+    reportPath: item.reportPath || "",
     findingsTriggered: findings.map((finding) =>
       `[${String(finding.severity || "info").toUpperCase()}] ${finding.title || "Finding"}`,
     ),
@@ -46,12 +106,82 @@ export const useGitStore = create((set, get) => ({
   pushHistory: [],
   expandedPushId: null,
   lastTestResult: "-",
+  liveLogs: [],
+  wsBound: false,
+  wsUnsubs: [],
+
+  bindRealtime: () => {
+    const state = get();
+    if (state.wsBound) {
+      return;
+    }
+
+    const wsApi = window.dockium?.ws;
+    if (!wsApi) {
+      return;
+    }
+
+    const unsubs = [];
+
+    unsubs.push(wsApi.onGitGateStart?.(() => {
+      set({ liveLogs: [] });
+    }));
+
+    unsubs.push(wsApi.onGitGateLog?.((event) => {
+      const payload = event?.data || event || {};
+      const message = String(payload?.message || "").trim();
+      if (!message) {
+        return;
+      }
+
+      set((inner) => ({
+        liveLogs: [
+          ...inner.liveLogs,
+          {
+            id: `${Date.now()}-${Math.random()}`,
+            timestamp: payload?.timestamp || new Date().toISOString(),
+            level: String(payload?.level || "info"),
+            step: String(payload?.step || ""),
+            message,
+          },
+        ].slice(-500),
+      }));
+    }));
+
+    unsubs.push(wsApi.onGitGateResult?.((event) => {
+      const payload = event?.data || event || {};
+      const next = formatHistoryItem(payload, Date.now());
+      set((inner) => ({
+        pushHistory: [next, ...inner.pushHistory],
+        expandedPushId: next.id,
+      }));
+    }));
+
+    set({
+      wsBound: true,
+      wsUnsubs: unsubs.filter(Boolean),
+    });
+  },
+
+  clearLiveLogs: () => set({ liveLogs: [] }),
+
+  loadHistory: async () => {
+    const repoPath = await getRepoPath();
+    const response = await window.dockium?.git?.loadHistory?.({ repoPath });
+    if (!response?.ok) {
+      return [];
+    }
+    return Array.isArray(response.history) ? response.history : [];
+  },
 
   hydrate: async () => {
     const status = await window.dockium?.git?.getGateStatus?.();
     const parsed = status?.status || {};
     const rules = parsed.gateRules || {};
-    const history = (parsed.pushHistory || []).map(formatHistoryItem);
+    const runtimeHistory = Array.isArray(parsed.pushHistory) ? parsed.pushHistory : [];
+    const persistedHistory = await get().loadHistory();
+    const merged = mergeHistoryRecords(persistedHistory, runtimeHistory);
+    const history = merged.map(formatHistoryItem);
 
     const repoPath = await getRepoPath();
 
@@ -62,6 +192,8 @@ export const useGitStore = create((set, get) => ({
       pushHistory: history,
       expandedPushId: history[0]?.id || null,
     });
+
+    get().bindRealtime();
   },
 
   installGate: async () => {

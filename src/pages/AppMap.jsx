@@ -7,6 +7,11 @@ const viewTabs = [
   { id: "api", label: "API Routes" },
 ];
 
+const apiSubTabs = [
+  { id: "auth", label: "Auth Login" },
+  { id: "routes", label: "API Endpoints" },
+];
+
 function prettyJson(value) {
   if (value === null || value === undefined) {
     return "--";
@@ -344,6 +349,7 @@ function RouteCard({ route, selected, expanded, testDraft, onSelect, onToggleExp
 
 export default function AppMap() {
   const [activeTab, setActiveTab] = React.useState("files");
+  const [apiSubTab, setApiSubTab] = React.useState("auth");
   const [showOpenApiDebug, setShowOpenApiDebug] = React.useState(false);
   const bootScanTriggered = React.useRef(false);
   const [projectInfo, setProjectInfo] = React.useState(null);
@@ -749,151 +755,186 @@ export default function AppMap() {
         ) : null}
 
         {activeTab === "api" ? (
-          <main className="appmap-v2-tabpanel">
+          <main className="appmap-v2-tabpanel appmap-api-panel">
             <h3>API Routes</h3>
             <div className="appmap-v2-note">
               Auth handling: App Map attempts automatic login using configured credentials. You can still apply a token manually to override.
             </div>
-            {fileFilterPath ? (
-              <div className="appmap-v2-note">
-                File filter is active ({fileFilterPath}). This can hide many routes.
-                <button type="button" className="appmap-inline-btn" onClick={clearFileFilter}>Show All Routes</button>
-              </div>
-            ) : null}
-            <div className="appmap-v2-note">
-              Login/Register API endpoints detected: {authSurface.apiAuthRoutes.length}
-              <div className="appmap-auth-test-actions">
-                <button type="button" className="appmap-inline-btn" onClick={runAuthRouteChecks} disabled={authRouteChecks.loading}>
-                  {authRouteChecks.loading ? "Testing..." : "Test Login/Register"}
+            <div className="appmap-api-tabs" role="tablist" aria-label="API routes sub-tabs">
+              {apiSubTabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={apiSubTab === tab.id}
+                  className={apiSubTab === tab.id ? "appmap-api-tab active" : "appmap-api-tab"}
+                  onClick={() => setApiSubTab(tab.id)}
+                >
+                  {tab.label}
                 </button>
-                <button type="button" className="appmap-inline-btn" onClick={() => openFirstAuthRoute("login")} disabled={!authSurface.loginUiUrl}>
-                  Open Login
-                </button>
-                <button type="button" className="appmap-inline-btn" onClick={() => openFirstAuthRoute("register")} disabled={!authSurface.registerUiUrl}>
-                  Open Register
-                </button>
-              </div>
-            </div>
-            <div className="appmap-v2-note">
-              Detected UI auth URLs: login {authSurface.loginUiUrl || "not detected"} | register {authSurface.registerUiUrl || "not detected"}
-            </div>
-            <div className="appmap-v2-note">
-              Detected API auth endpoints: login {authSurface.apiLoginPath || "not detected"} | register {authSurface.apiRegisterPath || "not detected"}
-            </div>
-            {authRouteChecks.error ? <div className="appmap-v2-warn">{authRouteChecks.error}</div> : null}
-            {authWorkflow ? (
-              <div className="appmap-auth-workflow">
-                <div className="appmap-auth-workflow-row">
-                  <span>Register</span>
-                  <span>{authWorkflow.register.attempted ? (authWorkflow.register.ok ? "PASS" : "FAIL") : "N/A"}</span>
-                  <span>{authWorkflow.register.path || "--"}</span>
-                  <span>{authWorkflow.register.statusCode || "--"}</span>
-                </div>
-                <div className="appmap-auth-workflow-row">
-                  <span>Login</span>
-                  <span>{authWorkflow.login.attempted ? (authWorkflow.login.ok ? "PASS" : "FAIL") : "N/A"}</span>
-                  <span>{authWorkflow.login.path || "--"}</span>
-                  <span>{authWorkflow.login.statusCode || "--"}</span>
-                </div>
-                <div className="appmap-auth-workflow-row">
-                  <span>Protected</span>
-                  <span>{authWorkflow.protected.attempted ? (authWorkflow.protected.ok ? "PASS" : "FAIL") : "N/A"}</span>
-                  <span>{authWorkflow.protected.path || "--"}</span>
-                  <span>{authWorkflow.protected.statusCode || "--"}</span>
-                </div>
-                <div className="appmap-auth-workflow-row">
-                  <span>Post-Auth Sweep</span>
-                  <span>{authWorkflow.postAuthSweep?.attempted ? (authWorkflow.postAuthSweep.failed > 0 ? "PARTIAL" : "PASS") : "N/A"}</span>
-                  <span>
-                    {authWorkflow.postAuthSweep?.attempted
-                      ? `pages ${authWorkflow.postAuthSweep.pageRoutes || 0} | api ${authWorkflow.postAuthSweep.apiRoutes || 0}`
-                      : "--"}
-                  </span>
-                  <span>
-                    {authWorkflow.postAuthSweep?.attempted
-                      ? `${authWorkflow.postAuthSweep.passed || 0}/${authWorkflow.postAuthSweep.tested || 0}`
-                      : "--"}
-                  </span>
-                </div>
-                <div className="appmap-auth-workflow-artifacts">
-                  Auth Artifact: token {authWorkflow.authArtifact?.token ? "YES" : "NO"} | cookie {authWorkflow.authArtifact?.cookie ? "YES" : "NO"}
-                </div>
-                {authWorkflow.postAuthSweep?.attempted && authWorkflow.postAuthSweep?.detail ? (
-                  <div className="appmap-auth-workflow-artifacts">
-                    {authWorkflow.postAuthSweep.detail}
-                  </div>
-                ) : null}
-                {authWorkflow.aiPayloadHelp?.attempted ? (
-                  <div className="appmap-auth-workflow-artifacts">
-                    AI Payload Help: {authWorkflow.aiPayloadHelp?.used ? "USED" : "ATTEMPTED"}
-                    {authWorkflow.aiPayloadHelp?.status ? ` | status ${authWorkflow.aiPayloadHelp.status}` : ""}
-                    {authWorkflow.aiPayloadHelp?.detail ? ` | ${authWorkflow.aiPayloadHelp.detail}` : ""}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-            {authRouteChecks.results.length > 0 ? (
-              <div className="appmap-auth-test-results">
-                {authRouteChecks.results.map((entry) => (
-                  <div key={`${entry.routeId}-${entry.kind}`} className="appmap-auth-test-row">
-                    <span>
-                      {entry.kind.toUpperCase()} {entry.method} {entry.path}
-                      {Array.isArray(entry.payloadKeys) && entry.payloadKeys.length > 0
-                        ? ` | payload: ${entry.payloadKeys.join(",")}`
-                        : ""}
-                      {Array.isArray(entry.triedStatuses) && entry.triedStatuses.length > 0
-                        ? ` | tried: ${entry.triedStatuses.join("/")}`
-                        : ""}
-                      {entry.payloadSource ? ` | source: ${entry.payloadSource}` : ""}
-                      {entry.responsePreview ? ` | response: ${entry.responsePreview}` : ""}
-                    </span>
-                    <span>{entry.ok ? `HTTP ${entry.statusCode || "--"}` : `FAILED: ${entry.error}`}</span>
-                  </div>
-                ))}
-              </div>
-            ) : null}
-            {loading ? <div className="appmap-v2-empty">Loading app map...</div> : null}
-            {error ? <div className="appmap-v2-error">{error}</div> : null}
-            {!loading && filteredRoutes.length === 0 ? (
-              <div className="appmap-v2-empty">
-                {hasProjectContext ? "No routes discovered yet. Click Refresh to rescan." : "No project context available."}
-              </div>
-            ) : null}
-
-            <div className="appmap-routes-scroll">
-              {groupedRoutes.map(([packageName, packageRoutes]) => (
-                <section key={packageName} className="appmap-route-group">
-                  <h4>{packageName}</h4>
-                  {packageRoutes.map((route) => {
-                    const testDraft = routeTests[route.id] || {
-                      open: false,
-                      loading: false,
-                      headersText: "{}",
-                      paramsText: "",
-                      queryText: "",
-                      bodyText: "{}",
-                      result: null,
-                      error: "",
-                    };
-                    return (
-                      <RouteCard
-                        key={route.id}
-                        route={route}
-                        selected={selectedRouteId === route.id}
-                        expanded={Boolean(expandedRoutes[route.id])}
-                        testDraft={testDraft}
-                        onSelect={() => selectRoute(route.id)}
-                        onToggleExpand={() => toggleRouteExpand(route.id)}
-                        onToggleTest={() => toggleTestPanel(route.id)}
-                        onTestDraftChange={(patch) => updateTestDraft(route.id, patch)}
-                        onRunTest={() => runRouteTest(route.id)}
-                        onOpenLive={() => openRouteLive(route)}
-                      />
-                    );
-                  })}
-                </section>
               ))}
             </div>
+
+            {apiSubTab === "auth" ? (
+              <>
+                <div className="appmap-v2-note">
+                  Login/Register API endpoints detected: {authSurface.apiAuthRoutes.length}
+                  <div className="appmap-auth-test-actions">
+                    <button type="button" className="appmap-inline-btn" onClick={runAuthRouteChecks} disabled={authRouteChecks.loading}>
+                      {authRouteChecks.loading ? "Testing..." : "Test Login/Register"}
+                    </button>
+                    <button type="button" className="appmap-inline-btn" onClick={() => openFirstAuthRoute("login")} disabled={!authSurface.loginUiUrl}>
+                      Open Login
+                    </button>
+                    <button type="button" className="appmap-inline-btn" onClick={() => openFirstAuthRoute("register")} disabled={!authSurface.registerUiUrl}>
+                      Open Register
+                    </button>
+                  </div>
+                </div>
+                <div className="appmap-v2-note">
+                  Detected UI auth URLs: login {authSurface.loginUiUrl || "not detected"} | register {authSurface.registerUiUrl || "not detected"}
+                </div>
+                <div className="appmap-v2-note">
+                  Detected API auth endpoints: login {authSurface.apiLoginPath || "not detected"} | register {authSurface.apiRegisterPath || "not detected"}
+                </div>
+                {authRouteChecks.error ? <div className="appmap-v2-warn">{authRouteChecks.error}</div> : null}
+                {authWorkflow ? (
+                  <div className="appmap-auth-workflow">
+                    <div className="appmap-auth-workflow-row">
+                      <span>Register</span>
+                      <span>{authWorkflow.register.attempted ? (authWorkflow.register.ok ? "PASS" : "FAIL") : "N/A"}</span>
+                      <span>{authWorkflow.register.path || "--"}</span>
+                      <span>{authWorkflow.register.statusCode || "--"}</span>
+                    </div>
+                    <div className="appmap-auth-workflow-row">
+                      <span>Login</span>
+                      <span>{authWorkflow.login.attempted ? (authWorkflow.login.ok ? "PASS" : "FAIL") : "N/A"}</span>
+                      <span>{authWorkflow.login.path || "--"}</span>
+                      <span>{authWorkflow.login.statusCode || "--"}</span>
+                    </div>
+                    <div className="appmap-auth-workflow-row">
+                      <span>Protected</span>
+                      <span>{authWorkflow.protected.attempted ? (authWorkflow.protected.ok ? "PASS" : "FAIL") : "N/A"}</span>
+                      <span>{authWorkflow.protected.path || "--"}</span>
+                      <span>{authWorkflow.protected.statusCode || "--"}</span>
+                    </div>
+                    <div className="appmap-auth-workflow-row">
+                      <span>Post-Auth Sweep</span>
+                      <span>{authWorkflow.postAuthSweep?.attempted ? (authWorkflow.postAuthSweep.failed > 0 ? "PARTIAL" : "PASS") : "N/A"}</span>
+                      <span>
+                        {authWorkflow.postAuthSweep?.attempted
+                          ? `pages ${authWorkflow.postAuthSweep.pageRoutes || 0} | api ${authWorkflow.postAuthSweep.apiRoutes || 0}`
+                          : "--"}
+                      </span>
+                      <span>
+                        {authWorkflow.postAuthSweep?.attempted
+                          ? `${authWorkflow.postAuthSweep.passed || 0}/${authWorkflow.postAuthSweep.tested || 0}`
+                          : "--"}
+                      </span>
+                    </div>
+                    <div className="appmap-auth-workflow-artifacts">
+                      Auth Artifact: token {authWorkflow.authArtifact?.token ? "YES" : "NO"} | cookie {authWorkflow.authArtifact?.cookie ? "YES" : "NO"}
+                    </div>
+                    {authWorkflow.uiAssist?.attempted ? (
+                      <div className="appmap-auth-workflow-artifacts">
+                        UI Assist: pages {authWorkflow.uiAssist?.pagesTested || 0}
+                        {Array.isArray(authWorkflow.uiAssist?.loginFields) && authWorkflow.uiAssist.loginFields.length > 0
+                          ? ` | login fields ${authWorkflow.uiAssist.loginFields.join(",")}`
+                          : " | login fields none"}
+                        {Array.isArray(authWorkflow.uiAssist?.registerFields) && authWorkflow.uiAssist.registerFields.length > 0
+                          ? ` | register fields ${authWorkflow.uiAssist.registerFields.join(",")}`
+                          : " | register fields none"}
+                      </div>
+                    ) : null}
+                    {authWorkflow.postAuthSweep?.attempted && authWorkflow.postAuthSweep?.detail ? (
+                      <div className="appmap-auth-workflow-artifacts">
+                        {authWorkflow.postAuthSweep.detail}
+                      </div>
+                    ) : null}
+                    {authWorkflow.aiPayloadHelp?.attempted ? (
+                      <div className="appmap-auth-workflow-artifacts">
+                        AI Payload Help: {authWorkflow.aiPayloadHelp?.used ? "USED" : "ATTEMPTED"}
+                        {authWorkflow.aiPayloadHelp?.status ? ` | status ${authWorkflow.aiPayloadHelp.status}` : ""}
+                        {authWorkflow.aiPayloadHelp?.detail ? ` | ${authWorkflow.aiPayloadHelp.detail}` : ""}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+                {authRouteChecks.results.length > 0 ? (
+                  <div className="appmap-auth-test-results">
+                    {authRouteChecks.results.map((entry) => (
+                      <div key={`${entry.routeId}-${entry.kind}`} className="appmap-auth-test-row">
+                        <span className="appmap-auth-test-row-main">
+                          {entry.kind.toUpperCase()} {entry.method} {entry.path}
+                          {Array.isArray(entry.payloadKeys) && entry.payloadKeys.length > 0
+                            ? ` | payload: ${entry.payloadKeys.join(",")}`
+                            : ""}
+                          {Array.isArray(entry.triedStatuses) && entry.triedStatuses.length > 0
+                            ? ` | tried: ${entry.triedStatuses.join("/")}`
+                            : ""}
+                          {entry.payloadSource ? ` | source: ${entry.payloadSource}` : ""}
+                          {entry.responsePreview ? ` | response: ${entry.responsePreview}` : ""}
+                        </span>
+                        <span className="appmap-auth-test-row-status">{entry.ok ? `HTTP ${entry.statusCode || "--"}` : `FAILED: ${entry.error}`}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </>
+            ) : null}
+
+            {apiSubTab === "routes" ? (
+              <>
+                {fileFilterPath ? (
+                  <div className="appmap-v2-note">
+                    File filter is active ({fileFilterPath}). This can hide many routes.
+                    <button type="button" className="appmap-inline-btn" onClick={clearFileFilter}>Show All Routes</button>
+                  </div>
+                ) : null}
+                {loading ? <div className="appmap-v2-empty">Loading app map...</div> : null}
+                {error ? <div className="appmap-v2-error">{error}</div> : null}
+                {!loading && filteredRoutes.length === 0 ? (
+                  <div className="appmap-v2-empty">
+                    {hasProjectContext ? "No routes discovered yet. Click Refresh to rescan." : "No project context available."}
+                  </div>
+                ) : null}
+
+                <div className="appmap-routes-scroll">
+                  {groupedRoutes.map(([packageName, packageRoutes]) => (
+                    <section key={packageName} className="appmap-route-group">
+                      <h4>{packageName}</h4>
+                      {packageRoutes.map((route) => {
+                        const testDraft = routeTests[route.id] || {
+                          open: false,
+                          loading: false,
+                          headersText: "{}",
+                          paramsText: "",
+                          queryText: "",
+                          bodyText: "{}",
+                          result: null,
+                          error: "",
+                        };
+                        return (
+                          <RouteCard
+                            key={route.id}
+                            route={route}
+                            selected={selectedRouteId === route.id}
+                            expanded={Boolean(expandedRoutes[route.id])}
+                            testDraft={testDraft}
+                            onSelect={() => selectRoute(route.id)}
+                            onToggleExpand={() => toggleRouteExpand(route.id)}
+                            onToggleTest={() => toggleTestPanel(route.id)}
+                            onTestDraftChange={(patch) => updateTestDraft(route.id, patch)}
+                            onRunTest={() => runRouteTest(route.id)}
+                            onOpenLive={() => openRouteLive(route)}
+                          />
+                        );
+                      })}
+                    </section>
+                  ))}
+                </div>
+              </>
+            ) : null}
           </main>
         ) : null}
       </div>

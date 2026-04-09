@@ -92,6 +92,130 @@ class ProxyEngine {
     this.capture = new RequestCapture(10000)
     this.modifier = new RequestModifier()
     this.wss = config?.wss || null
+    this.host = '0.0.0.0'
+    this.originalFetch = null
+  }
+
+  patchGlobalFetchCapture() {
+    if (this.originalFetch || typeof globalThis.fetch !== 'function') {
+      return
+    }
+
+    this.originalFetch = globalThis.fetch.bind(globalThis)
+    const engine = this
+
+    globalThis.fetch = async function dockiumProxyCapturedFetch(input, init = {}) {
+      const original = engine.originalFetch || globalThis.fetch
+      const method = String(init?.method || (typeof input === 'object' && input?.method) || 'GET').toUpperCase()
+      let urlValue = ''
+
+      try {
+        if (typeof input === 'string') {
+          urlValue = input
+        } else if (input && typeof input === 'object' && input.url) {
+          urlValue = String(input.url)
+        }
+      } catch {
+        urlValue = ''
+      }
+
+      const isHttp = /^https?:\/\//i.test(urlValue)
+      if (!isHttp || !engine.running) {
+        return original(input, init)
+      }
+
+      const startedAt = Date.now()
+      let parsed
+      try {
+        parsed = new URL(urlValue)
+      } catch {
+        return original(input, init)
+      }
+
+      const reqBodyRaw = init?.body
+      const reqBody = Buffer.isBuffer(reqBodyRaw)
+        ? reqBodyRaw.toString('utf8')
+        : typeof reqBodyRaw === 'string'
+          ? reqBodyRaw
+          : reqBodyRaw && typeof reqBodyRaw === 'object'
+            ? JSON.stringify(reqBodyRaw)
+            : ''
+
+      const reqHeaders = init?.headers && typeof init.headers === 'object'
+        ? init.headers
+        : {}
+
+      const request = engine.capture.capture({
+        method,
+        host: parsed.host,
+        path: `${parsed.pathname || '/'}${parsed.search || ''}`,
+        requestHeaders: reqHeaders,
+        requestBody: clipBufferParts([Buffer.from(String(reqBody || ''))]).buffer.toString('utf8'),
+        requestFormat: inferFormat(reqHeaders, reqBody),
+        requestBytes: Buffer.byteLength(String(reqBody || ''), 'utf8'),
+        responseStatus: 0,
+        responseHeaders: {},
+        responseBody: '',
+        responseFormat: 'empty',
+        responseBytes: 0,
+        durationMs: 0,
+      })
+
+      engine.wss?.emit('request', request)
+
+      try {
+        const response = await original(input, init)
+        let responseText = ''
+        try {
+          responseText = await response.clone().text()
+        } catch {
+          responseText = ''
+        }
+
+        const responseHeaders = Object.fromEntries(response.headers?.entries?.() || [])
+        const responseData = clipBufferParts([Buffer.from(String(responseText || ''))])
+        const responseFormat = inferFormat(responseHeaders, responseData.buffer.toString('utf8'))
+        const responseBody = toSafeText(responseData.buffer, responseFormat)
+
+        const updated = engine.capture.update(request.id, {
+          responseStatus: Number(response.status || 0),
+          responseHeaders,
+          responseBody,
+          responseFormat,
+          responseBytes: responseData.bytes,
+          responseRaw: toResponseRaw(response.status, responseHeaders, responseBody),
+          durationMs: Math.max(0, Date.now() - startedAt),
+        })
+
+        if (updated) {
+          engine.wss?.emit('request', updated)
+        }
+
+        return response
+      } catch (error) {
+        const updated = engine.capture.update(request.id, {
+          responseStatus: 0,
+          responseHeaders: {},
+          responseBody: String(error?.message || 'fetch failed'),
+          responseFormat: 'text',
+          responseBytes: Buffer.byteLength(String(error?.message || ''), 'utf8'),
+          responseRaw: toResponseRaw(0, {}, String(error?.message || 'fetch failed')),
+          durationMs: Math.max(0, Date.now() - startedAt),
+        })
+
+        if (updated) {
+          engine.wss?.emit('request', updated)
+        }
+        throw error
+      }
+    }
+  }
+
+  unpatchGlobalFetchCapture() {
+    if (this.originalFetch) {
+      globalThis.fetch = this.originalFetch
+      this.originalFetch = null
+    }
   }
 
   async start() {
@@ -112,26 +236,40 @@ class ProxyEngine {
     })
 
     return new Promise((resolve) => {
-      this.proxy.listen(this.port, () => {
+      const onReady = () => {
         this.running = true
-        console.log('[ProxyEngine] Proxy listening on port', this.port)
+        console.log('[ProxyEngine] Proxy listening on', `${this.host}:${this.port}`)
         resolve()
-      })
+      }
+
+      try {
+        this.proxy.listen({ host: this.host, port: this.port }, onReady)
+      } catch {
+        this.proxy.listen(this.port, onReady)
+      }
     })
+      .then(() => {
+        this.patchGlobalFetchCapture()
+      })
   }
 
   async stop() {
-    if (!this.running) {
+    if (!this.running && !this.proxy?.httpServer) {
       return
     }
 
-    return new Promise((resolve) => {
-      this.proxy.close(() => {
-        this.running = false
-        console.log('[ProxyEngine] Proxy stopped')
-        resolve()
-      })
-    })
+    try {
+      if (this.proxy?.httpServer && typeof this.proxy.close === 'function') {
+        this.proxy.close()
+      }
+    } catch (error) {
+      console.warn('[ProxyEngine] Proxy stop warning:', String(error?.message || error))
+    } finally {
+      this.unpatchGlobalFetchCapture()
+      this.running = false
+      this.proxy = new HttpMitmProxy()
+      console.log('[ProxyEngine] Proxy stopped')
+    }
   }
 
   onRequest(ctx) {
@@ -301,6 +439,7 @@ class ProxyEngine {
     return {
       running: this.running,
       intercepting: this.intercepting,
+      host: this.host,
       port: this.port,
       requestCount: this.capture.getAll().length
     }

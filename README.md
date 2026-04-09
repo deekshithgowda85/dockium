@@ -56,6 +56,157 @@ What `npm run dev` does:
 - Waits for renderer port.
 - Starts Electron pointing to renderer URL.
 
+## Dockium CLI (Git Gate)
+
+Dockium now includes a standalone CLI for git gate workflows:
+
+- `dockium init`
+- `dockium push`
+- `dockium gate-check`
+
+### Make `dockium` Recognizable On Your Computer
+
+From the repository root:
+
+```bash
+npm install
+npm link
+```
+
+Then verify:
+
+```bash
+dockium --help
+```
+
+If your shell has not refreshed PATH yet, open a new terminal window.
+
+Fallback options:
+
+```bash
+npm run dockium -- --help
+node ./bin/dockium.js --help
+```
+
+### Command Usage
+
+Initialize project config + pre-push hook:
+
+```bash
+dockium init
+```
+
+Run gate then push:
+
+```bash
+dockium push
+```
+
+`dockium push` only pushes existing local commits. If there are no commits ahead of the remote branch, it exits with a clear "Nothing to push" message.
+
+By default, `dockium push` runs security checks and then continues push in warn-only mode even if findings are reported.
+To enforce hard blocking behavior, use `--enforce-gate`.
+
+```bash
+dockium push --enforce-gate
+```
+
+By default, `dockium push` blocks when report artifacts are detected in unpushed commits (for example `dockium-report-*.docx` or `.dockium/reports/*`).
+If this is intentional, override with:
+
+```bash
+dockium push --allow-report-artifacts
+```
+
+To auto-commit local changes before gate and push:
+
+```bash
+dockium push --auto-commit --commit-message "chore: update challenge skill"
+```
+
+Skip gate and push directly:
+
+```bash
+dockium push --skip-gate
+```
+
+Run gate check only (used by git hook):
+
+```bash
+dockium gate-check
+```
+
+## End-to-End Validation Path
+
+Use this checklist to validate init, push, gate-check, hook behavior, and live UI updates.
+
+### 1) Validate Init
+
+```bash
+dockium init
+```
+
+Confirm files:
+
+```bash
+cat .dockium/config.json
+cat .git/hooks/pre-push
+```
+
+Expected hook behavior:
+
+- runs `dockium gate-check` if available
+- falls back to `node ./bin/dockium.js gate-check`
+
+### 2) Validate gate-check command
+
+```bash
+dockium gate-check
+```
+
+Expected:
+
+- prints `[Gate] Step 1/5 ... Step 5/5` style logs
+- exits non-zero when policy is blocked or any gate error occurs
+
+### 3) Validate push command
+
+```bash
+dockium push --skip-gate
+dockium push
+```
+
+Expected:
+
+- `--skip-gate` pushes directly
+- normal push runs gate and blocks/forwards based on findings/tests/policy
+
+### 4) Validate pre-push hook
+
+```bash
+git push origin <your-branch>
+```
+
+Expected:
+
+- hook invokes `dockium gate-check`
+- push is blocked when gate fails
+
+### 5) Validate live Git Gate UI updates
+
+1. Start Dockium app (`npm run dev`)
+2. Open `Git Gate` page in the app
+3. Run `dockium push` in a terminal
+4. Confirm in UI:
+
+- live step logs in `LIVE GATE LOG`
+- new push row in history with result/severity summary
+
+Notes:
+
+- CLI publishes realtime events to the running app through local WebSocket (`ws://127.0.0.1:4242`).
+- Push reports are persisted under `.dockium/reports/push-*.json` and loaded into history.
+
 ## Build and Packaging
 
 Build renderer only:

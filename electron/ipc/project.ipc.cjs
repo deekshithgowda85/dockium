@@ -197,6 +197,7 @@ function registerProjectIpc(ipcMain, deps) {
       : (Array.isArray(payload?.params) ? payload.params : []);
     const queryParams = Array.isArray(payload?.queryParams) ? payload.queryParams : [];
     const body = payload?.body;
+    const bodyEncoding = String(payload?.bodyEncoding || "json").toLowerCase();
     const method = String(payload?.method || payload?.route?.method || "GET").toUpperCase();
 
     const response = await testRoute(payload.route, {
@@ -205,6 +206,7 @@ function registerProjectIpc(ipcMain, deps) {
       pathParams,
       queryParams,
       body,
+      bodyEncoding,
       method,
     });
     if (response?.ok === false) {

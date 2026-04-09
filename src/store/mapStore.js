@@ -194,8 +194,20 @@ function isRegisterRoute(route) {
   return /(register|signup|create[-_]?account|users)/.test(pathValue);
 }
 
+function isUiAuthPageRoute(route) {
+  const pathValue = String(route?.path || route?.fullPath || "").toLowerCase();
+  const method = String(route?.method || "GET").toUpperCase();
+  if (method !== "GET") {
+    return false;
+  }
+  if (pathValue.startsWith("/api") || pathValue.startsWith("/rest")) {
+    return false;
+  }
+  return /(login|signin|register|signup)/.test(pathValue);
+}
+
 const MAX_AUTH_ROUTE_CANDIDATES = 3;
-const MAX_LOGIN_SEED_CANDIDATES = 5;
+const MAX_LOGIN_SEED_CANDIDATES = 10;
 const MAX_POST_AUTH_SWEEP_ROUTES = 80;
 
 function authRoutePriority(route, kind) {
@@ -220,6 +232,12 @@ function authRoutePriority(route, kind) {
     if (/users/.test(pathValue)) {
       score -= 1;
     }
+    if (/\/api\/users\/?$/.test(pathValue)) {
+      score -= 6;
+    }
+    if (/\/rest\/user\/signup\/?$/.test(pathValue)) {
+      score += 12;
+    }
   }
 
   if (/(swagger|openapi|docs|mock|example)/.test(pathValue)) {
@@ -230,6 +248,80 @@ function authRoutePriority(route, kind) {
   }
 
   return score;
+}
+
+function dedupeRouteCandidates(candidates = []) {
+  const seen = new Set();
+  const out = [];
+  candidates.forEach((route) => {
+    const method = String(route?.method || "GET").toUpperCase();
+    const pathValue = String(route?.path || route?.fullPath || "");
+    const key = `${method} ${pathValue}`;
+    if (!pathValue || seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    out.push(route);
+  });
+  return out;
+}
+
+function createSyntheticRoute(pathValue, source = "synthetic-register-fallback") {
+  const normalizedPath = String(pathValue || "").trim();
+  return {
+    id: `${source}-${normalizedPath.replace(/[^a-zA-Z0-9/_-]/g, "_")}`,
+    method: "POST",
+    path: normalizedPath,
+    fullPath: normalizedPath,
+    handlerName: source,
+    middlewareChain: [],
+    authRequired: false,
+    authStatus: "PUBLIC",
+    sourceFile: source,
+    sourceLine: 1,
+    request: {
+      pathParams: [],
+      queryParams: [],
+      bodySchema: null,
+    },
+    response: {
+      statusCodes: [],
+      bodySchema: null,
+      contentType: "application/json",
+    },
+  };
+}
+
+function buildRegisterFallbackCandidates(routes = [], loginCandidates = []) {
+  const staticPaths = [
+    "/api/users",
+    "/api/users/",
+    "/api/Users",
+    "/api/Users/",
+  ];
+
+  const fromRoutes = routes
+    .filter((route) => {
+      const method = String(route?.method || "GET").toUpperCase();
+      const pathValue = String(route?.path || route?.fullPath || "").toLowerCase();
+      return method === "POST" && /\/api\//.test(pathValue) && /users?/.test(pathValue);
+    })
+    .map((route) => String(route?.path || route?.fullPath || "").trim())
+    .filter(Boolean);
+
+  const fromLogin = loginCandidates
+    .map((route) => String(route?.path || route?.fullPath || "").trim())
+    .filter(Boolean)
+    .flatMap((pathValue) => {
+      const lower = pathValue.toLowerCase();
+      if (/\/rest\/user\/(login|signin|session|token|auth)/.test(lower)) {
+        return ["/api/users", "/api/Users", "/api/Users/"];
+      }
+      return [];
+    });
+
+  return [...new Set([...fromRoutes, ...fromLogin, ...staticPaths])]
+    .map((pathValue) => createSyntheticRoute(pathValue));
 }
 
 function pickAuthRouteCandidates(routes = [], kind = "login") {
@@ -372,20 +464,53 @@ function uniquePayloadVariants(variants = []) {
   return out;
 }
 
-function authPayloadVariants(route, kind, credentialSeed = {}) {
+function buildUiHintPayload(fields = [], values = {}) {
+  if (!Array.isArray(fields) || fields.length === 0) {
+    return null;
+  }
+
+  const payload = {};
+  fields.slice(0, 14).forEach((field) => {
+    const key = String(field || "").trim();
+    if (!key || /search|query|csrf|tokenized/.test(key)) {
+      return;
+    }
+    payload[key] = resolveValueForField(key, values);
+  });
+
+  return Object.keys(payload).length > 0 ? payload : null;
+}
+
+function authPayloadVariants(route, kind, credentialSeed = {}, uiHints = null) {
   const base = buildAuthPayload(route, kind, credentialSeed);
   const email = String(base.email || credentialSeed?.email || "user@dockium.local");
   const username = String(base.username || email.split("@")[0] || "dockium");
   const password = String(base.password || credentialSeed?.password || "Password123!");
   const name = String(base.name || "Dockium Test User");
+  const pathValue = String(route?.path || route?.fullPath || "").toLowerCase();
+  const isApiUsersRegister = kind === "register" && /\/api\/users\/?$/.test(pathValue);
   const securityQuestionId = Number(credentialSeed?.securityQuestionId || base?.securityQuestionId || 1) || 1;
   const securityQuestionObject = credentialSeed?.securityQuestionObject && typeof credentialSeed.securityQuestionObject === "object"
     ? credentialSeed.securityQuestionObject
     : (base?.securityQuestion && typeof base.securityQuestion === "object" ? base.securityQuestion : { id: securityQuestionId });
   const securityAnswer = String(credentialSeed?.securityAnswer || base?.securityAnswer || "dockium-generic-answer").trim() || "dockium-generic-answer";
+  const uiFields = kind === "login"
+    ? (Array.isArray(uiHints?.loginFields) ? uiHints.loginFields : [])
+    : (Array.isArray(uiHints?.registerFields) ? uiHints.registerFields : []);
+  const uiPayload = buildUiHintPayload(uiFields, {
+    email,
+    username,
+    password,
+    name,
+    securityQuestion: securityQuestionId,
+    securityQuestionId,
+    securityAnswer,
+    fallback: kind,
+  });
 
   if (kind === "login") {
     return uniquePayloadVariants([
+      uiPayload,
       { email, password },
       { username, password },
       { email: username, password },
@@ -398,7 +523,35 @@ function authPayloadVariants(route, kind, credentialSeed = {}) {
     ]);
   }
 
+  const apiUsersPriorityPayloads = isApiUsersRegister
+    ? [
+      {
+        email,
+        password,
+        passwordRepeat: password,
+        securityQuestion: String(securityQuestionId),
+        securityAnswer,
+      },
+      {
+        email,
+        password,
+        passwordRepeat: password,
+        securityQuestion: securityQuestionId,
+        securityAnswer,
+      },
+      {
+        email,
+        password,
+        passwordRepeat: password,
+        securityQuestionId,
+        securityAnswer,
+      },
+    ]
+    : [];
+
   return uniquePayloadVariants([
+    ...apiUsersPriorityPayloads,
+    uiPayload,
     {
       email,
       password,
@@ -468,7 +621,32 @@ function credentialCandidates(config = {}) {
     candidates.push({ email: "test@example.com", password: "Password123!", source: "fallback-alt-1" });
     candidates.push({ email: "admin@example.com", password: "Password123!", source: "fallback-alt-2" });
   }
-  return candidates;
+
+  const commonKnownCredentials = [
+    { email: "admin@juice-sh.op", password: "admin123", source: "known-juice-shop-admin" },
+    { email: "jim@juice-sh.op", password: "ncc-1701", source: "known-juice-shop-jim" },
+    { email: "bender@juice-sh.op", password: "Ikillyou", source: "known-juice-shop-bender" },
+  ];
+
+  commonKnownCredentials.forEach((entry) => candidates.push(entry));
+
+  const unique = [];
+  const seen = new Set();
+  candidates.forEach((candidate) => {
+    const email = String(candidate?.email || "").trim().toLowerCase();
+    const password = String(candidate?.password || "").trim();
+    if (!email || !password) {
+      return;
+    }
+    const key = `${email}::${password}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    unique.push({ ...candidate, email, password });
+  });
+
+  return unique;
 }
 
 function isProtectedRoute(route) {
@@ -507,6 +685,88 @@ function parseBodyPreviewAsJson(result) {
   } catch {
     return null;
   }
+}
+
+function getBodyPreviewText(result) {
+  return String(result?.liveResponse?.bodyPreview || "").trim();
+}
+
+function normalizeEmailLike(value, fallback = "") {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return String(fallback || "").trim();
+  }
+  if (raw.includes("@")) {
+    return raw.toLowerCase();
+  }
+  return `${raw.toLowerCase()}@example.com`;
+}
+
+function registerResponseMissingIdentity(result) {
+  const raw = getBodyPreviewText(result);
+  const payload = parseBodyPreviewAsJson(result);
+  if (!payload || typeof payload !== "object") {
+    const lower = raw.toLowerCase();
+    if (!lower) {
+      return false;
+    }
+    const hasNullOrEmptyEmail = /"email"\s*:\s*(null|""|"\s*")/.test(lower);
+    const hasNullOrEmptyUsername = /"username"\s*:\s*(null|""|"\s*")/.test(lower);
+    return hasNullOrEmptyEmail && hasNullOrEmptyUsername;
+  }
+
+  const root = payload?.data && typeof payload.data === "object"
+    ? payload.data
+    : (payload?.user && typeof payload.user === "object" ? payload.user : payload);
+  const hasEmailField = Object.prototype.hasOwnProperty.call(root || {}, "email");
+  if (!hasEmailField) {
+    return false;
+  }
+
+  const email = normalizeEmailLike(root?.email, "");
+  const username = String(root?.username || root?.login || "").trim();
+  return !email && !username;
+}
+
+function extractUiInputFieldHints(html = "") {
+  const text = String(html || "");
+  if (!text) {
+    return [];
+  }
+
+  const matches = text.match(/<input\b[^>]*>/gi) || [];
+  const fields = [];
+  const seen = new Set();
+  for (const tag of matches) {
+    const nameMatch = tag.match(/\bname\s*=\s*['\"]([^'\"]+)['\"]/i);
+    const idMatch = tag.match(/\bid\s*=\s*['\"]([^'\"]+)['\"]/i);
+    const autoCompleteMatch = tag.match(/\bautocomplete\s*=\s*['\"]([^'\"]+)['\"]/i);
+    const candidates = [nameMatch?.[1], idMatch?.[1], autoCompleteMatch?.[1]]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean);
+
+    for (const candidate of candidates) {
+      const normalized = candidate.toLowerCase();
+      if (seen.has(normalized)) {
+        continue;
+      }
+      seen.add(normalized);
+      fields.push(normalized);
+    }
+  }
+
+  return fields;
+}
+
+function mergeFieldHints(target = [], incoming = []) {
+  const merged = new Set(Array.isArray(target) ? target : []);
+  (Array.isArray(incoming) ? incoming : []).forEach((field) => {
+    const value = String(field || "").trim().toLowerCase();
+    if (value) {
+      merged.add(value);
+    }
+  });
+  return [...merged];
 }
 
 function extractTokenFromObject(payload) {
@@ -1003,8 +1263,13 @@ export const useMapStore = create((set, get) => ({
   runAuthRouteChecks: async () => {
     const state = get();
     const routes = Array.isArray(state.routes) ? state.routes : [];
-    const registerRouteCandidates = pickAuthRouteCandidates(routes, "register");
+    const registerRouteCandidatesRaw = pickAuthRouteCandidates(routes, "register");
     const loginRouteCandidates = pickAuthRouteCandidates(routes, "login");
+    const registerFallbackCandidates = buildRegisterFallbackCandidates(routes, loginRouteCandidates);
+    const registerRouteCandidates = dedupeRouteCandidates([
+      ...registerRouteCandidatesRaw,
+      ...registerFallbackCandidates,
+    ]).slice(0, MAX_AUTH_ROUTE_CANDIDATES + 4);
     const protectedRoute = routes
       .filter((route) => isProtectedRoute(route))
       .sort((a, b) => protectedRouteScore(a) - protectedRouteScore(b))[0] || null;
@@ -1013,6 +1278,9 @@ export const useMapStore = create((set, get) => ({
       const pathValue = String(route?.path || route?.fullPath || "").toLowerCase();
       return method === "GET" && /security[-_]?question/.test(pathValue);
     }) || null;
+    const uiAuthCandidates = routes
+      .filter((route) => isUiAuthPageRoute(route))
+      .slice(0, 6);
 
     if (registerRouteCandidates.length === 0 && loginRouteCandidates.length === 0) {
       set({
@@ -1040,6 +1308,41 @@ export const useMapStore = create((set, get) => ({
     const configResponse = await window.dockium?.project?.getConfig?.();
     const config = configResponse?.ok ? (configResponse.config || {}) : {};
     const credentialPool = credentialCandidates(config);
+    const uiHints = {
+      loginFields: [],
+      registerFields: [],
+      scannedRoutes: [],
+    };
+
+    for (const uiRoute of uiAuthCandidates) {
+      const uiProbe = await window.dockium?.project?.testRoute?.({
+        route: uiRoute,
+        authToken: "",
+        headers: {
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+        pathParams: [],
+        queryParams: [],
+        body: null,
+        method: "GET",
+      });
+
+      const bodyPreview = String(uiProbe?.result?.liveResponse?.bodyPreview || "");
+      const fields = extractUiInputFieldHints(bodyPreview);
+      if (fields.length === 0) {
+        continue;
+      }
+
+      const pathValue = String(uiRoute?.path || uiRoute?.fullPath || "").toLowerCase();
+      if (/(login|signin)/.test(pathValue)) {
+        uiHints.loginFields = mergeFieldHints(uiHints.loginFields, fields);
+      }
+      if (/(register|signup)/.test(pathValue)) {
+        uiHints.registerFields = mergeFieldHints(uiHints.registerFields, fields);
+      }
+      uiHints.scannedRoutes.push(uiRoute.path || uiRoute.fullPath || "/");
+    }
+
     let discoveredSecuritySeed = null;
     if (securityQuestionRoute) {
       const securityProbe = await window.dockium?.project?.testRoute?.({
@@ -1094,30 +1397,115 @@ export const useMapStore = create((set, get) => ({
         apiRoutes: 0,
         detail: "",
       },
+      uiAssist: {
+        attempted: uiAuthCandidates.length > 0,
+        pagesTested: uiHints.scannedRoutes.length,
+        loginFields: uiHints.loginFields,
+        registerFields: uiHints.registerFields,
+        detail: uiHints.scannedRoutes.length > 0
+          ? `UI auth fields extracted from ${uiHints.scannedRoutes.length} page(s).`
+          : "No UI auth fields extracted from discovered pages.",
+      },
     };
 
     const results = [];
     let createdCredential = null;
     let persistedAuthArtifact = "";
+    const registerCredentialCandidates = [];
+
+    function addRegisterCredentialCandidate(seed, source = "register-derived") {
+      const email = normalizeEmailLike(String(seed?.email || "").trim());
+      const password = String(seed?.password || "").trim();
+      if (!email || !password) {
+        return;
+      }
+
+      const exists = registerCredentialCandidates.some((entry) => entry.email === email && entry.password === password);
+      if (exists) {
+        return;
+      }
+
+      registerCredentialCandidates.push({
+        email,
+        password,
+        source,
+      });
+    }
+
+    function authOutcomeRank(outcome) {
+      if (outcome?.authSuccess) {
+        return 5;
+      }
+      const statusCode = Number(outcome?.statusCode || 0);
+      if (statusCode === 409) {
+        return 4;
+      }
+      if (statusCode >= 200 && statusCode < 300) {
+        return 3;
+      }
+      if (statusCode >= 400 && statusCode < 500) {
+        return 2;
+      }
+      if (statusCode > 0) {
+        return 1;
+      }
+      return 0;
+    }
+
+    function seedPriority(seed) {
+      const source = String(seed?.source || "").toLowerCase();
+      if (source.startsWith("register-created")) return 0;
+      if (source.startsWith("register-http-success")) return 1;
+      if (source.startsWith("register-attempt")) return 2;
+      if (source.includes("known-juice-shop-admin")) return 3;
+      if (source.includes("known-juice-shop")) return 4;
+      if (source.includes("admin-user")) return 5;
+      if (source.includes("test-user")) return 6;
+      if (source.includes("fallback")) return 7;
+      return 8;
+    }
 
     async function runAuthVariants(route, kind, seed) {
       if (!route) {
         return {
           ok: false,
+          authSuccess: false,
           statusCode: 0,
           error: "Route not found",
           pickedPayload: null,
           triedStatuses: [],
           credentialSource: seed?.source || "unknown",
+          payloadSource: "none",
           routeResult: null,
         };
       }
 
-      const variants = authPayloadVariants(route, kind, seed);
+      function outcomeRank(success, statusCode) {
+        if (success) {
+          return 4;
+        }
+        if (statusCode >= 200 && statusCode < 300) {
+          return 3;
+        }
+        if (statusCode === 409) {
+          return 3;
+        }
+        if (statusCode >= 400 && statusCode < 500) {
+          return 2;
+        }
+        if (statusCode >= 500) {
+          return 1;
+        }
+        return 0;
+      }
+
+      const variants = authPayloadVariants(route, kind, seed, uiHints);
       let pickedResponse = null;
       let pickedPayload = null;
       let pickedStatusCode = 0;
       let pickedSource = "heuristic";
+      let pickedAuthSuccess = false;
+      let pickedRank = 0;
       const triedStatuses = [];
       const seenPayloads = new Set();
       let responsePreviewForAi = "";
@@ -1145,48 +1533,51 @@ export const useMapStore = create((set, get) => ({
         }
         seenPayloads.add(signature);
 
-        const response = await window.dockium?.project?.testRoute?.({
-          route,
-          authToken: "",
-          headers: {},
-          pathParams: [],
-          queryParams: [],
-          body: variant,
-          method: route.method,
-        });
+        const encodings = ["json", "form"];
+        for (const encoding of encodings) {
+          const response = await window.dockium?.project?.testRoute?.({
+            route,
+            authToken: "",
+            headers: {},
+            pathParams: [],
+            queryParams: [],
+            body: variant,
+            bodyEncoding: encoding,
+            method: route.method,
+          });
 
-        const statusCode = Number(response?.result?.liveResponse?.statusCode || 0);
-        const success = kind === "register"
-          ? Boolean(response?.ok && ((statusCode >= 200 && statusCode < 300) || statusCode === 409))
-          : Boolean(response?.ok && statusCode >= 200 && statusCode < 300);
+          const statusCode = Number(response?.result?.liveResponse?.statusCode || 0);
+          const statusLooksSuccessful = kind === "register"
+            ? Boolean(response?.ok && ((statusCode >= 200 && statusCode < 300) || statusCode === 409))
+            : Boolean(response?.ok && statusCode >= 200 && statusCode < 300);
+          const responseMissingIdentity = kind === "register"
+            ? registerResponseMissingIdentity(response?.result)
+            : false;
+          const success = statusLooksSuccessful && !responseMissingIdentity;
+          const currentRank = outcomeRank(success, statusCode);
 
-        triedStatuses.push(statusCode || 0);
+          triedStatuses.push(statusCode || 0);
 
-        const bodyPreview = clipText(String(response?.result?.liveResponse?.bodyPreview || ""), 160);
-        if (!responsePreviewForAi && bodyPreview && !success) {
-          responsePreviewForAi = bodyPreview;
-        }
+          const bodyPreview = clipText(String(response?.result?.liveResponse?.bodyPreview || ""), 160);
+          if (!responsePreviewForAi && bodyPreview && !success) {
+            responsePreviewForAi = bodyPreview;
+          }
+          if (!responsePreviewForAi && responseMissingIdentity) {
+            responsePreviewForAi = "Register response is missing a usable email/username identity.";
+          }
 
-        if (!pickedResponse) {
-          pickedResponse = response;
-          pickedPayload = variant;
-          pickedStatusCode = statusCode;
-          pickedSource = source;
-        }
+          if (!pickedResponse || currentRank > pickedRank || (currentRank === pickedRank && statusCode > pickedStatusCode)) {
+            pickedResponse = response;
+            pickedPayload = variant;
+            pickedStatusCode = statusCode;
+            pickedSource = `${source}:${encoding}`;
+            pickedAuthSuccess = success;
+            pickedRank = currentRank;
+          }
 
-        if (success) {
-          pickedResponse = response;
-          pickedPayload = variant;
-          pickedStatusCode = statusCode;
-          pickedSource = source;
-          return { skipped: false, success: true };
-        }
-
-        if ((pickedStatusCode || 0) === 0 && statusCode > 0) {
-          pickedResponse = response;
-          pickedPayload = variant;
-          pickedStatusCode = statusCode;
-          pickedSource = source;
+          if (success) {
+            return { skipped: false, success: true };
+          }
         }
 
         return { skipped: false, success: false };
@@ -1202,7 +1593,7 @@ export const useMapStore = create((set, get) => ({
         }
       }
 
-      if (!(pickedStatusCode >= 200 && pickedStatusCode < 300) && !(kind === "register" && pickedStatusCode === 409)) {
+      if (!pickedAuthSuccess) {
         const aiSuggestion = await suggestAiAuthPayloads(route, kind, seed, triedStatuses, responsePreviewForAi);
         workflow.aiPayloadHelp.attempted = workflow.aiPayloadHelp.attempted || Boolean(aiSuggestion.attempted);
         workflow.aiPayloadHelp.status = Number(aiSuggestion.status || workflow.aiPayloadHelp.status || 0);
@@ -1223,6 +1614,7 @@ export const useMapStore = create((set, get) => ({
 
       return {
         ok: Boolean(pickedResponse?.ok),
+        authSuccess: pickedAuthSuccess,
         statusCode: pickedStatusCode,
         error: pickedResponse?.ok ? "" : String(pickedResponse?.error || "Route test failed"),
         pickedPayload,
@@ -1243,8 +1635,23 @@ export const useMapStore = create((set, get) => ({
           ...(credentialPool[0] || {}),
           ...(discoveredSecuritySeed || {}),
         });
-        const registerSuccess = registerOutcome.statusCode >= 200
+        const registerSuccess = Boolean(registerOutcome.authSuccess);
+        const httpAccepted = registerOutcome.statusCode >= 200
           && (registerOutcome.statusCode < 300 || registerOutcome.statusCode === 409);
+        const attemptedEmail = normalizeEmailLike(String(
+          registerOutcome.pickedPayload?.email
+          || registerOutcome.pickedPayload?.username
+          || registerOutcome.pickedPayload?.login
+          || ""
+        ).trim());
+        const attemptedPassword = String(registerOutcome.pickedPayload?.password || "").trim();
+
+        if (httpAccepted && attemptedEmail && attemptedPassword) {
+          addRegisterCredentialCandidate(
+            { email: attemptedEmail, password: attemptedPassword },
+            `register-http-success:${candidateRoute.path || candidateRoute.fullPath || "unknown"}`,
+          );
+        }
 
         results.push({
           routeId: candidateRoute.id,
@@ -1272,13 +1679,17 @@ export const useMapStore = create((set, get) => ({
           break;
         }
 
-        if ((selectedRegisterOutcome?.statusCode || 0) === 0 && (registerOutcome.statusCode || 0) > 0) {
+        const candidateRank = authOutcomeRank(registerOutcome);
+        const selectedRank = authOutcomeRank(selectedRegisterOutcome);
+        const selectedStatus = Number(selectedRegisterOutcome?.statusCode || 0);
+        if (candidateRank > selectedRank || (candidateRank === selectedRank && registerOutcome.statusCode > selectedStatus)) {
           selectedRegisterRoute = candidateRoute;
           selectedRegisterOutcome = registerOutcome;
         }
       }
 
       const registerOutcome = selectedRegisterOutcome || {
+        authSuccess: false,
         statusCode: 0,
         error: "Register route test failed",
         pickedPayload: null,
@@ -1287,8 +1698,7 @@ export const useMapStore = create((set, get) => ({
         triedStatuses: [],
         responsePreview: "",
       };
-      const registerSuccess = registerOutcome.statusCode >= 200
-        && (registerOutcome.statusCode < 300 || registerOutcome.statusCode === 409);
+      const registerSuccess = Boolean(registerOutcome.authSuccess);
 
       workflow.register.path = selectedRegisterRoute?.path || workflow.register.path;
       workflow.register.ok = registerSuccess;
@@ -1297,22 +1707,27 @@ export const useMapStore = create((set, get) => ({
 
       if (registerSuccess) {
         createdCredential = {
-          email: String(
+          email: normalizeEmailLike(String(
             registerOutcome.pickedPayload?.email
             || registerOutcome.pickedPayload?.username
             || credentialPool[0]?.email
             || ""
-          ).trim(),
+          ).trim(), credentialPool[0]?.email || "user@example.com"),
           password: String(registerOutcome.pickedPayload?.password || credentialPool[0]?.password || "").trim(),
           source: registerOutcome.statusCode === 409 ? "register-existing" : "register-created",
         };
+      } else if (registerCredentialCandidates.length > 0) {
+        createdCredential = {
+          ...registerCredentialCandidates[0],
+          source: registerCredentialCandidates[0].source || "register-http-success",
+        };
       } else if (registerOutcome?.pickedPayload) {
-        const attemptedEmail = String(
+        const attemptedEmail = normalizeEmailLike(String(
           registerOutcome.pickedPayload?.email
           || registerOutcome.pickedPayload?.username
           || registerOutcome.pickedPayload?.login
           || ""
-        ).trim();
+        ).trim());
         const attemptedPassword = String(registerOutcome.pickedPayload?.password || "").trim();
         if (attemptedEmail && attemptedPassword) {
           createdCredential = {
@@ -1327,20 +1742,27 @@ export const useMapStore = create((set, get) => ({
     let loginArtifact = { token: "", cookie: "" };
     if (loginRouteCandidates.length > 0) {
       const loginSeeds = [];
-      if (createdCredential?.email && createdCredential?.password) {
-        loginSeeds.push(createdCredential);
-      }
-      credentialPool.forEach((candidate) => {
-        const email = String(candidate?.email || "").trim();
+      const addLoginSeed = (candidate) => {
+        const email = normalizeEmailLike(String(candidate?.email || "").trim());
         const password = String(candidate?.password || "").trim();
         if (!email || !password) {
           return;
         }
         const exists = loginSeeds.some((seed) => seed.email === email && seed.password === password);
         if (!exists) {
-          loginSeeds.push(candidate);
+          loginSeeds.push({ ...candidate, email, password });
         }
-      });
+      };
+
+      if (createdCredential?.email && createdCredential?.password) {
+        addLoginSeed(createdCredential);
+      }
+
+      registerCredentialCandidates.forEach((candidate) => addLoginSeed(candidate));
+
+      const prioritizedCredentialPool = [...credentialPool].sort((a, b) => seedPriority(a) - seedPriority(b));
+      prioritizedCredentialPool.forEach((candidate) => addLoginSeed(candidate));
+
       const boundedLoginSeeds = loginSeeds.slice(0, MAX_LOGIN_SEED_CANDIDATES);
 
       let selectedLoginRoute = loginRouteCandidates[0];
@@ -1377,6 +1799,7 @@ export const useMapStore = create((set, get) => ({
 
         loginOutcome = loginOutcome || {
           ok: false,
+          authSuccess: false,
           statusCode: 0,
           error: "Login route test failed",
           pickedPayload: null,
@@ -1385,7 +1808,7 @@ export const useMapStore = create((set, get) => ({
           routeResult: null,
         };
 
-        const loginSuccess = loginOutcome.statusCode >= 200 && loginOutcome.statusCode < 300;
+        const loginSuccess = Boolean(loginOutcome.authSuccess);
 
         results.push({
           routeId: loginRoute.id,
@@ -1421,15 +1844,16 @@ export const useMapStore = create((set, get) => ({
 
       const loginOutcome = selectedLoginOutcome || {
         ok: false,
+        authSuccess: false,
         statusCode: 0,
         error: "Login route test failed",
         pickedPayload: null,
-        triedStatuses: combinedStatuses,
+        triedStatuses: [],
         credentialSource: "unknown",
         routeResult: null,
       };
 
-      const loginSuccess = loginOutcome.statusCode >= 200 && loginOutcome.statusCode < 300;
+      const loginSuccess = Boolean(loginOutcome.authSuccess);
       const artifact = extractAuthArtifact(loginOutcome.routeResult);
       loginArtifact = artifact;
 

@@ -1005,6 +1005,7 @@ async function testImportedRoute(route, options = {}) {
   const querySuffix = query.toString() ? `?${query.toString()}` : "";
   const url = `${targetUrl}${materializedPath}${querySuffix}`;
   const body = options?.body;
+  const bodyEncoding = String(options?.bodyEncoding || "json").toLowerCase();
   const authHeaders = options?.authHeaders && typeof options.authHeaders === "object"
     ? options.authHeaders
     : {};
@@ -1016,10 +1017,33 @@ async function testImportedRoute(route, options = {}) {
 
   const fetchImpl = await resolveFetch();
   try {
+    let requestBody;
+    if (["POST", "PUT", "PATCH"].includes(method)) {
+      if (bodyEncoding === "form") {
+        const params = new URLSearchParams();
+        const source = body && typeof body === "object" ? body : {};
+        for (const [key, value] of Object.entries(source)) {
+          if (value === undefined || value === null) {
+            continue;
+          }
+          if (typeof value === "object") {
+            params.append(key, JSON.stringify(value));
+          } else {
+            params.append(key, String(value));
+          }
+        }
+        headers["Content-Type"] = "application/x-www-form-urlencoded;charset=UTF-8";
+        requestBody = params.toString();
+      } else {
+        headers["Content-Type"] = "application/json";
+        requestBody = JSON.stringify(body || {});
+      }
+    }
+
     const response = await fetchImpl(url, {
       method,
       headers,
-      body: ["POST", "PUT", "PATCH"].includes(method) ? JSON.stringify(body || {}) : undefined,
+      body: requestBody,
     });
 
     const text = await response.text();
@@ -1035,6 +1059,7 @@ async function testImportedRoute(route, options = {}) {
           queryParams,
           headers,
           body: body || null,
+          bodyEncoding,
         },
         liveResponse: {
           statusCode: response.status,
@@ -1841,6 +1866,17 @@ function registerCoreIpcHandlers() {
       runtime.latestReport = report;
     },
     getLastScan: () => runtime.lastScan,
+    ensureProxyEngine: (config = {}) => {
+      if (!runtime.proxyEngine) {
+        runtime.proxyEngine = new runtime.ProxyEngine({
+          ...config,
+          project: runtime.projectConfig?.project,
+          wss: runtime.wss,
+        });
+      }
+      return runtime.proxyEngine;
+    },
+    getProxyEngine: () => runtime.proxyEngine,
     getWss: () => runtime.wss,
   });
 
@@ -1884,7 +1920,13 @@ function registerCoreIpcHandlers() {
   registerGitIpc(ipcMain, {
     getProjectPath: () => runtime.projectPath,
     createGitHookInstaller: () => new runtime.GitHookInstaller(),
-    createGitGate: (repoPath) => new runtime.GitGate(runtime.projectConfig, repoPath),
+    createGitGate: (repoPath) => new runtime.GitGate({
+      ...(runtime.projectConfig || {}),
+      gitGate: {
+        ...((runtime.projectConfig && runtime.projectConfig.gitGate) || {}),
+        ...(runtime.gateRules || {}),
+      },
+    }, repoPath),
     addPushHistory: (record) => {
       runtime.pushHistory = [record, ...runtime.pushHistory].slice(0, 200);
       getStore().set("pushHistory", runtime.pushHistory);
@@ -1986,6 +2028,7 @@ function registerCoreIpcHandlers() {
           authHeaders: options?.authHeaders || {},
           headers: options?.headers || {},
           body: options?.body,
+          bodyEncoding: options?.bodyEncoding || "json",
           pathParams: options?.pathParams || options?.params || [],
           queryParams: options?.queryParams || [],
           method: options?.method || route?.method,
@@ -1998,6 +2041,7 @@ function registerCoreIpcHandlers() {
         authHeaders: options?.authHeaders || {},
         headers: options?.headers || {},
         body: options?.body,
+        bodyEncoding: options?.bodyEncoding || "json",
         pathParams: options?.pathParams || options?.params || [],
         queryParams: options?.queryParams || [],
         method: options?.method || route?.method,

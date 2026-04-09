@@ -1,6 +1,6 @@
 import { chromium, firefox, webkit } from 'playwright'
 
-const REQUEST_TIMEOUT_MS = 9000
+const REQUEST_TIMEOUT_MS = 6000
 const LLM_TIMEOUT_MS = 3500
 const MAX_UI_PAGE_TESTS = 60
 const MAX_API_ROUTE_TESTS = 70
@@ -134,6 +134,42 @@ function toSameOriginPath(baseUrl, candidateUrl) {
   } catch {
     return ''
   }
+}
+
+function normalizeDiscoveredUiLink(baseUrl, candidateUrl) {
+  const candidate = String(candidateUrl || '').trim()
+  if (!candidate) {
+    return ''
+  }
+
+  let parsed
+  try {
+    parsed = new URL(candidate)
+  } catch {
+    return ''
+  }
+
+  try {
+    const base = new URL(baseUrl)
+    if (parsed.origin !== base.origin) {
+      return ''
+    }
+  } catch {
+    return ''
+  }
+
+  const pathname = String(parsed.pathname || '/').toLowerCase()
+  if (!pathname || pathname === '/api' || pathname === '/rest' || pathname.startsWith('/api/') || pathname.startsWith('/rest/')) {
+    return ''
+  }
+  if (/\.(json|xml|js|css|png|jpe?g|gif|svg|ico|pdf|zip|map|woff2?|ttf)$/i.test(pathname)) {
+    return ''
+  }
+
+  const normalized = new URL(parsed.toString())
+  normalized.hash = ''
+  normalized.search = ''
+  return normalized.toString()
 }
 
 function normalizeHeaders(headersLike = {}) {
@@ -798,18 +834,27 @@ class BrowserUseOrchestrator {
       try {
         const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: REQUEST_TIMEOUT_MS })
         status = Number(response?.status() || 0)
-        title = String(await page.title())
-        forms = await page.$$eval('form', (entries) => entries.length)
-        mappedElements = (await captureActionableElements(page, url)).map((entry) => ({
-          ...entry,
-          selector: toSimpleSelector(entry),
-          destinationPath: toSameOriginPath(baseUrl, entry.destination),
-        }))
+        const responseHeaders = typeof response?.headers === 'function' ? response.headers() : {}
+        const contentType = String(responseHeaders?.['content-type'] || '').toLowerCase()
+        const htmlLike = contentType.includes('text/html') || contentType === ''
+
+        title = htmlLike ? String(await page.title()) : ''
+        forms = htmlLike ? await page.$$eval('form', (entries) => entries.length) : 0
+        mappedElements = htmlLike
+          ? (await captureActionableElements(page, url)).map((entry) => ({
+            ...entry,
+            selector: toSimpleSelector(entry),
+            destinationPath: toSameOriginPath(baseUrl, entry.destination),
+          }))
+          : []
 
         discoveredLinks = mappedElements
           .map((entry) => String(entry.destination || '').trim())
           .filter(Boolean)
-          .filter((candidate) => sameOrigin(baseUrl, candidate))
+          .map((candidate) => normalizeDiscoveredUiLink(baseUrl, candidate))
+          .filter(Boolean)
+
+        discoveredLinks = [...new Set(discoveredLinks)]
 
         for (const discovered of discoveredLinks) {
           if (!visited.has(discovered) && !queue.includes(discovered) && queue.length < MAX_DISCOVERED_UI_LINKS) {

@@ -1,0 +1,412 @@
+================================================================
+DOCKIUM — GIT GATE / dockium push FEATURE
+5 Agent Prompts | Run in Order | Paste One at a Time
+================================================================
+
+What this builds:
+  dockium init   → writes .dockium/config.json + installs git pre-push hook
+  dockium push   → scan → test → push to GitHub (blocked if findings exist)
+  GitGate.js     → core logic: diff → secrets → scan → tests → report
+  DiffAnalyzer.js→ reads git diff, finds changed files + new routes
+  Git Gate UI    → your existing page receives live push results via WebSocket
+
+Your project context (fill these in before pasting each prompt):
+  [YOUR_CLI_ENTRY]     → e.g. cli/index.js
+  [YOUR_CORE_DIR]      → e.g. core/
+  [YOUR_GIT_GATE_PAGE] → e.g. renderer/pages/GitGate.jsx  or  src/pages/git-gate.js
+  [YOUR_WS_BRIDGE]     → e.g. electron/ipc.js  or  core/socket.js
+  [YOUR_SCAN_MODULE]   → e.g. core/scanner/ScanOrchestrator.js
+  [YOUR_SECRETS_MOD]   → e.g. core/scanner/SecretsScanner.js
+  [YOUR_ROUTES_MOD]    → e.g. core/mapper/RouteExtractor.js
+
+If any of [YOUR_SCAN_MODULE], [YOUR_SECRETS_MOD], [YOUR_ROUTES_MOD]
+do not exist yet, replace that line in the prompt with:
+  "Build a stub that returns an empty array for now"
+
+================================================================
+PROMPT 1 / 5 — DIAGNOSE & PLAN
+Goal: read the project, understand what exists, confirm what needs building
+================================================================
+
+You are a planning agent for my Node.js + Electron CLI tool called dockium.
+
+I want to build a "dockium push" git gate feature. Before writing any code,
+read my project and give me a clear picture of what already exists and what
+needs to be built from scratch.
+
+My project structure:
+  CLI entry point:       [YOUR_CLI_ENTRY]
+  Core logic folder:     [YOUR_CORE_DIR]
+  Git Gate UI page:      [YOUR_GIT_GATE_PAGE]
+  WebSocket/IPC bridge:  [YOUR_WS_BRIDGE]
+  Scan orchestrator:     [YOUR_SCAN_MODULE]
+  Secrets scanner:       [YOUR_SECRETS_MOD]
+  Route extractor:       [YOUR_ROUTES_MOD]
+
+Step 1 — Read [YOUR_CLI_ENTRY] and list every command already registered.
+  Answer: does a "push" command exist? does an "init" command exist?
+
+Step 2 — Check [YOUR_CORE_DIR] for these files:
+  core/git/GitGate.js
+  core/git/DiffAnalyzer.js
+  Answer: do they exist? If yes, what methods do they expose?
+
+Step 3 — Read [YOUR_SCAN_MODULE] and answer:
+  a) What is the exact method signature for running a scan?
+  b) What does it return? (shape of the result object)
+
+Step 4 — Read [YOUR_SECRETS_MOD] and answer:
+  a) What is the method name for scanning a diff string?
+  b) What does it return?
+
+Step 5 — Read [YOUR_ROUTES_MOD] and answer:
+  a) What is the method for extracting routes from a repo path?
+  b) What does it return?
+
+Step 6 — Read [YOUR_GIT_GATE_PAGE] and answer:
+  a) What data does it currently display?
+  b) Is there a WebSocket or IPC listener for incoming push results?
+  c) What shape of data does it expect?
+
+Step 7 — Read [YOUR_WS_BRIDGE] and answer:
+  a) What is the function name used to broadcast data to the renderer?
+  b) What channel names are already in use?
+
+Output format:
+  [EXISTS]   — file or method already exists
+  [MISSING]  — needs to be created
+  [PARTIAL]  — exists but incomplete
+
+End with a numbered build order:
+  "Build order: 1) ___ 2) ___ 3) ___ ..."
+
+Do not write any code. Diagnosis only.
+
+================================================================
+PROMPT 2 / 5 — BUILD DiffAnalyzer.js + GitGate.js
+Goal: core git logic — read diff, detect routes, run scan, run tests, save report
+================================================================
+
+You are a Node.js agent building the core git gate logic for dockium.
+
+I already have (confirmed from Prompt 1):
+  - [YOUR_SCAN_MODULE]   exports: [exact method name from Prompt 1 output]
+  - [YOUR_SECRETS_MOD]   exports: [exact method name from Prompt 1 output]
+  - [YOUR_ROUTES_MOD]    exports: [exact method name from Prompt 1 output]
+  - [YOUR_WS_BRIDGE]     broadcast function: [exact function name from Prompt 1 output]
+
+Build these two files:
+
+================================================================
+FILE 1: [YOUR_CORE_DIR]/git/DiffAnalyzer.js
+
+class DiffAnalyzer {
+  async analyze(repoPath) {
+    // use simple-git
+    // 1. diffSummary(['HEAD~1', 'HEAD']) → changedFiles (array of file paths)
+    // 2. diff(['HEAD~1', 'HEAD'])        → diffString (raw diff text)
+    // 3. log(['--max-count=1'])          → commitSha (first 7 chars), commitMessage
+    // 4. use [YOUR_ROUTES_MOD] to get all routes, filter to only routes whose
+    //    sourceFile is in changedFiles → newRoutes
+    // 5. load framework/language from .dockium/config.json for the route extractor
+    // Return:
+    //   { changedFiles, newRoutes, diffString, commitSha, commitMessage }
+  }
+}
+module.exports = { DiffAnalyzer }
+
+================================================================
+FILE 2: [YOUR_CORE_DIR]/git/GitGate.js
+
+class GitGate {
+  async check(repoPath, branch, remote) {
+    // Step 1: load .dockium/config.json
+    // Step 2: call DiffAnalyzer.analyze(repoPath)
+    // Step 3: call [YOUR_SECRETS_MOD] on diff.diffString
+    //         → log warning if secrets found
+    // Step 4: call [YOUR_SCAN_MODULE] with (config, diff.changedFiles, diff.newRoutes)
+    // Step 5: run config.project.testCommand via execSync
+    //         timeout: 120000ms, stdio: 'inherit'
+    //         catch error → testsPassed = false
+    // Step 6: merge all findings, save report to
+    //         .dockium/reports/push-{commitSha}-{Date.now()}.json
+    //         report shape: { timestamp, branch, commitSha, commitMessage,
+    //                         changedFiles, findings, testsPassed, durationMs }
+    // Step 7: filter findings by config.gitGate.blockOn severities
+    //         also block if testsPassed=false AND config.gitGate.blockOnTestFailure=true
+    // Return: { allowed: bool, reason: string, findings: array }
+  }
+
+  saveReport(repoPath, result) { ... }
+  loadConfig(repoPath) { ... }  // reads .dockium/config.json
+}
+module.exports = { GitGate }
+
+================================================================
+
+Rules:
+  - Use simple-git for all git operations (already in package.json)
+  - Use execSync from child_process for running the test command
+  - Use the EXACT method signatures from Prompt 1 output for the scanner modules
+  - Handle errors gracefully: if diff fails return empty arrays, do not throw
+  - Show complete runnable code for both files
+
+================================================================
+PROMPT 3 / 5 — BUILD dockium init + dockium push CLI COMMANDS
+Goal: two new CLI commands that use GitGate and write project config + git hook
+================================================================
+
+You are a Node.js CLI agent for dockium.
+
+I already have:
+  - [YOUR_CLI_ENTRY] with Commander.js
+  - [YOUR_CORE_DIR]/git/GitGate.js  (built in Prompt 2)
+  - [YOUR_CORE_DIR]/git/DiffAnalyzer.js  (built in Prompt 2)
+
+Build these three files:
+
+================================================================
+FILE 1: cli/commands/init.js
+
+async function init() {
+  // Use inquirer or readline to interactively prompt for:
+  //   name        (project name, default: current folder name)
+  //   targetUrl   (e.g. http://localhost:3000)
+  //   appPort     (number, default: 3000)
+  //   testCommand (e.g. npm test, default: "npm test")
+  //
+  // Then do THREE things:
+  //
+  // 1. Create .dockium/ folder if not exists
+  //    Write .dockium/config.json with this shape:
+  //    {
+  //      "project": {
+  //        "name": <name>,
+  //        "path": process.cwd(),
+  //        "targetUrl": <targetUrl>,
+  //        "appPort": <appPort>,
+  //        "testCommand": <testCommand>
+  //      },
+  //      "gitGate": {
+  //        "enabled": true,
+  //        "blockOn": ["critical", "high"],
+  //        "blockOnTestFailure": true
+  //      }
+  //    }
+  //
+  // 2. Write .git/hooks/pre-push with content:
+  //    #!/bin/sh
+  //    exec dockium gate-check "$@"
+  //
+  // 3. chmod +x .git/hooks/pre-push
+  //
+  // Print success message showing what was created
+}
+module.exports = init
+
+================================================================
+FILE 2: cli/commands/push.js
+
+async function push(options) {
+  // 1. Get repo path = process.cwd()
+  // 2. Get branch: options.branch OR git.revparse(['--abbrev-ref', 'HEAD'])
+  // 3. Get remote: options.remote (default 'origin')
+  // 4. If options.skipGate is true → skip to step 7 directly
+  // 5. Print: "[DOCKIUM] Pushing <branch> → <remote>"
+  //    Print: "[DOCKIUM] Running gate check..."
+  // 6. new GitGate().check(repoPath, branch, remote)
+  // 7. If result.allowed:
+  //      Print: "[DOCKIUM] Gate PASSED — pushing..."
+  //      git.push(remote, branch)
+  //      Print: "[DOCKIUM] Done. <remote>/<branch> updated."
+  //    If NOT result.allowed:
+  //      Print: "[DOCKIUM] Push BLOCKED"
+  //      Print: "Reason: <result.reason>"
+  //      For each finding: "  [SEVERITY] type — endpoint"
+  //      Print: "Fix the above and run dockium push again."
+  //      process.exit(1)
+}
+module.exports = push
+
+================================================================
+FILE 3: cli/commands/gateCheck.js
+
+async function gateCheck() {
+  // Minimal wrapper — same as push but called by the git hook
+  // 1. Get repoPath, branch, remote same as push.js
+  // 2. Run GitGate.check()
+  // 3. If blocked → process.exit(1) (git sees non-zero and aborts the push)
+  // 4. If allowed → process.exit(0)
+}
+module.exports = gateCheck
+
+================================================================
+
+Also show me the exact lines to add to [YOUR_CLI_ENTRY] to register all three:
+
+  program
+    .command('init')
+    .description('Initialize dockium in this project')
+    .action(require('./commands/init'))
+
+  program
+    .command('push')
+    .description('Scan → test → push to GitHub')
+    .option('--remote <r>', 'remote name', 'origin')
+    .option('--branch <b>', 'branch to push')
+    .option('--skip-gate', 'skip the gate check')
+    .action(require('./commands/push'))
+
+  program
+    .command('gate-check')
+    .description('Run gate check (used by git hook)')
+    .action(require('./commands/gateCheck'))
+
+Rules:
+  - Use simple-git for git operations
+  - Use fs and path from Node stdlib — no extra dependencies for file writing
+  - For init interactive prompts: use inquirer if already in package.json,
+    otherwise use readline (no new dependencies)
+  - Show complete runnable code for all three files
+
+================================================================
+PROMPT 4 / 5 — WIRE GIT GATE PAGE TO RECEIVE PUSH RESULTS
+Goal: existing Git Gate page shows live push results from dockium push runs
+================================================================
+
+You are a frontend + Electron IPC agent for dockium.
+
+I already have:
+  - Git Gate page at [YOUR_GIT_GATE_PAGE]  ← DO NOT rebuild this from scratch
+  - WebSocket/IPC bridge at [YOUR_WS_BRIDGE]
+  - GitGate.js saving reports to .dockium/reports/push-{sha}-{ts}.json
+  - push.js emitting gate results after each run
+
+The push result object shape is:
+  {
+    timestamp:     string (ISO),
+    branch:        string,
+    commitSha:     string (7 chars),
+    commitMessage: string,
+    changedFiles:  string[],
+    findings:      [{ severity, type, endpoint }],
+    testsPassed:   boolean,
+    durationMs:    number
+  }
+
+Task 1 — Update [YOUR_WS_BRIDGE] to broadcast push results:
+  After GitGate.check() completes in push.js, broadcast the full result
+  using the existing broadcast function with channel name 'gitgate:result'
+  Also broadcast each step log as 'gitgate:log' with { message: string }
+
+Task 2 — Update [YOUR_GIT_GATE_PAGE] to receive and display results:
+  Add a listener for 'gitgate:result' channel
+  For each result received, add a row to the existing results list showing:
+    - commitSha + commitMessage as the row header
+    - PASSED (green) or BLOCKED (red) badge
+    - Count of findings grouped by severity: X critical, Y high, Z medium
+    - testsPassed indicator (✓ or ✗)
+    - Duration in seconds (e.g. "4.2s")
+  On row click: expand to show the full findings list
+    Each finding: [SEVERITY] type — endpoint
+
+Task 3 — Load history on page load:
+  On page load, read all files matching .dockium/reports/push-*.json
+  Render them in the same list, sorted newest first
+  Use fs.readdirSync via IPC — add a 'gitgate:loadHistory' IPC handler
+  in [YOUR_WS_BRIDGE] that reads the reports folder and returns all results
+
+Task 4 — Add a step-by-step log panel:
+  Listen for 'gitgate:log' events
+  Display each log message in a log panel below the results list
+  Clear the log panel when a new push starts ('gitgate:start' event)
+
+Rules:
+  - Do NOT rebuild the Git Gate page from scratch — only ADD to it
+  - Match existing HTML element IDs, class names, and component structure
+  - Do not change any existing IPC channel names
+  - Use the EXACT broadcast function name from [YOUR_WS_BRIDGE]
+  - Show file path + unified diff for every change
+
+================================================================
+PROMPT 5 / 5 — TEST END TO END + FIX ISSUES
+Goal: run the full flow, confirm every step works, fix anything broken
+================================================================
+
+You are a debugging and integration agent for dockium.
+
+I have just built the dockium push git gate feature across Prompts 1-4.
+Help me test it end to end and fix any issues found.
+
+My setup:
+  - dockium-app running at [YOUR_TARGET_URL]
+  - Git repo at current working directory
+  - .dockium/config.json already written by dockium init
+
+Step 1 — Verify dockium init ran correctly:
+  Check these three things exist:
+    cat .dockium/config.json           → should show valid JSON
+    cat .git/hooks/pre-push            → should show: exec dockium gate-check "$@"
+    ls -la .git/hooks/pre-push         → should show executable (-rwxr-xr-x)
+  If any are missing or wrong, fix them now.
+
+Step 2 — Run a dry test of the gate:
+  node [YOUR_CLI_ENTRY] push --skip-gate
+  Expected: pushes to origin without running the gate
+  If this fails → show me the exact error and fix [YOUR_CLI_ENTRY] registration
+
+Step 3 — Run the full gate:
+  node [YOUR_CLI_ENTRY] push
+  Watch for these log lines in order:
+    [DOCKIUM] Pushing <branch> → origin
+    [Gate] Step 1/5: Analyzing diff...
+    [Gate] Step 2/5: Scanning for secrets...
+    [Gate] Step 3/5: Running security scan...
+    [Gate] Step 4/5: Running test suite...
+    [Gate] Step 5/5: Documenting results...
+    [DOCKIUM] Gate PASSED  OR  [DOCKIUM] Push BLOCKED
+  If any step crashes → show me the stack trace and fix the relevant file
+
+Step 4 — Verify the report file was created:
+  ls .dockium/reports/
+  cat .dockium/reports/push-*.json | head -30
+  Expected: valid JSON with timestamp, branch, commitSha, findings, testsPassed
+
+Step 5 — Verify the Git Gate page updates:
+  Open the Electron app → navigate to Git Gate page
+  Run: node [YOUR_CLI_ENTRY] push
+  Expected: a new row appears in the Git Gate page in real time
+  If nothing appears → check [YOUR_WS_BRIDGE] for the broadcast call
+    Add console.log('[WS] broadcasting gitgate:result', result) temporarily
+    Check Electron DevTools console for the event
+
+Step 6 — Test the git hook:
+  git push origin main
+  Expected: hook fires, gate runs, push succeeds or is blocked
+  If hook does not fire:
+    Run: cat .git/hooks/pre-push
+    Run: ls -la .git/hooks/pre-push
+    Fix permissions: chmod +x .git/hooks/pre-push
+
+For each failure found:
+  Show me the exact error message
+  Show me the file and line causing it
+  Apply a minimal fix — do not rewrite the whole file
+  Confirm the fix resolves it before moving to the next step
+
+================================================================
+QUICK REFERENCE — What each prompt builds
+================================================================
+
+Prompt 1  Read project → confirm what exists vs what needs building
+Prompt 2  core/git/DiffAnalyzer.js + core/git/GitGate.js
+Prompt 3  cli/commands/init.js + push.js + gateCheck.js + register in CLI
+Prompt 4  Wire Git Gate page → receive live results + load history
+Prompt 5  End-to-end test → fix any integration issues
+
+Run in order. Each prompt depends on the previous one being done.
+Always fill in the [BRACKET] values with your actual file paths before pasting.
+
+================================================================
+END OF FILE
+================================================================

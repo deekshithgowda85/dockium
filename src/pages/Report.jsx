@@ -337,6 +337,16 @@ export default function Report() {
     refreshContext();
   }, [refreshContext]);
 
+  React.useEffect(() => {
+    const timer = window.setInterval(() => {
+      refreshContext();
+    }, 3000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [refreshContext]);
+
   const projectName = String(context?.project?.name || "-");
   const scanStarted = String(context?.scan?.completedAt || "-");
   const duration = Number(context?.scan?.durationMs || 0);
@@ -393,6 +403,21 @@ export default function Report() {
     () => context?.scan?.operations?.aiProbe || context?.latestReport?.operations?.aiProbe || null,
     [context?.latestReport?.operations?.aiProbe, context?.scan?.operations?.aiProbe],
   );
+
+  const browserUseAuthWorkflow = React.useMemo(() => {
+    const fromDoc = Array.isArray(context?.browserUse?.documentation?.instances)
+      ? context.browserUse.documentation.instances
+      : [];
+    const fromOps = Array.isArray(context?.latestReport?.operations?.browserUse?.documentation?.instances)
+      ? context.latestReport.operations.browserUse.documentation.instances
+      : [];
+    const instances = fromDoc.length > 0 ? fromDoc : fromOps;
+    const authRunner = instances.find((entry) => String(entry?.kind || "") === "auth-route");
+    return authRunner?.workflow || null;
+  }, [
+    context?.browserUse?.documentation?.instances,
+    context?.latestReport?.operations?.browserUse?.documentation?.instances,
+  ]);
 
   const proxyOps = React.useMemo(() => {
     const proxy = context?.proxy || {};
@@ -683,6 +708,10 @@ export default function Report() {
             <div className="report-map-block">
               <h4>Browser UI/Route Testing</h4>
               <pre>{JSON.stringify(browserUseCoverage, null, 2)}</pre>
+            </div>
+            <div className="report-map-block">
+              <h4>Auth Workflow</h4>
+              <pre>{JSON.stringify(browserUseAuthWorkflow || {}, null, 2)}</pre>
             </div>
             <div className="report-map-block">
               <h4>Scanner AI Probe</h4>
